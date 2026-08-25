@@ -70,6 +70,18 @@ const PRIMARY_DRAG_TOOLS: readonly string[] = [
   ToolNames.stackScroll,
 ];
 
+/**
+ * 全部需挂载到 ToolGroup 的工具名（常驻 + 占位测量）。
+ * 注意：initializeTools() 的 addTool 只注册到全局工具表，
+ * ToolGroup.addTool 才会把实例放入 _toolInstances 并填充
+ * toolOptions——缺了它 setToolActive 会静默失效，事件派发
+ * 找不到任何激活工具。
+ */
+export const ALL_TOOL_NAMES: readonly string[] = [
+  ...PRIMARY_DRAG_TOOLS,
+  ...PLACEHOLDER_MEASUREMENT_TOOLS,
+];
+
 /** 各工具的常驻绑定（不随主工具切换而丢失） */
 const PERSISTENT_BINDINGS: Readonly<Record<string, readonly ToolBinding[]>> = {
   [ToolNames.pan]: [{ mouseButton: MouseBindings.Auxiliary }],
@@ -111,6 +123,10 @@ export function createBoundToolGroup(
   const toolGroup = ToolGroupManager.createToolGroup(renderingEngineId);
   if (!toolGroup) {
     throw new Error(`创建 ToolGroup 失败: ${renderingEngineId}/${viewportId}`);
+  }
+  // 先挂载全部工具实例，再激活绑定（setToolActive 对未挂载工具静默 return）
+  for (const toolName of ALL_TOOL_NAMES) {
+    toolGroup.addTool(toolName);
   }
   toolGroup.addViewport(viewportId, renderingEngineId);
   syncToolBindings(toolGroup, ToolNames.windowLevel);
