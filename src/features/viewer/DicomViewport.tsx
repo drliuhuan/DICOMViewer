@@ -315,6 +315,44 @@ export function DicomViewport({
     };
   }, [imageIds, pipelineReady, publishUi]);
 
+  // 布局/窗口尺寸变化时按容器新尺寸重排图像：
+  // Cornerstone3D 仅在 enableElement 时按元素当时尺寸设置 canvas，
+  // 容器随后变化（如 1×1 → 1×2 网格切换）不会自动重算，必须显式
+  // renderingEngine.resize(immediate, keepCamera)。keepCamera=true
+  // 保留用户缩放/平移状态（WW/WL 为视口属性，同样不受影响）；
+  // immediate=true 时库内部会调度重新渲染（ContextPool 渲染引擎确认）。
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') {
+      return undefined;
+    }
+    let rafId = 0;
+    // rAF 合并：网格模板切换的过渡期间连续触发的回调只执行最后一次
+    const scheduleResize = () => {
+      if (rafId !== 0) {
+        return;
+      }
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        try {
+          const engine = getRenderingEngine(RENDERING_ENGINE_ID);
+          engine?.resize(true, true); // immediate + keepCamera
+        } catch {
+          // 引擎销毁等卸载竞态：静默忽略
+        }
+      });
+    };
+    const observer = new ResizeObserver(scheduleResize);
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      if (rafId !== 0) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+    };
+  }, []);
+
   // 视口事件订阅：翻页滚动 → 层号；VOI 变化 → WW/WL；相机变化 → 缩放比例；
   // 双击 → 适应窗口（FR-3.4/FR-14.1 桌面语义）
   useEffect(() => {
