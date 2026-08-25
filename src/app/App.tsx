@@ -14,6 +14,12 @@ import {
 } from '../features/loading/openDicomFiles';
 import { dedupeBySopUid } from '../features/series/dedupe';
 import {
+  generateThumbnail,
+  getThumbnail,
+  setThumbnail,
+} from '../features/series/thumbnails';
+import { getBufferForImageId } from '../dicom/imageId';
+import {
   scanDroppedItems,
   scanDirectoryHandle,
   supportsDirectoryPicker,
@@ -95,6 +101,8 @@ export default function App() {
   const [wwDraft, setWwDraft] = useState('');
   const [wlDraft, setWlDraft] = useState('');
   const [toast, setToast] = useState<string | null>(null);
+  /** 序列 uid → 缩略图 dataURL（FR-2.4） */
+  const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
 
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -332,6 +340,33 @@ export default function App() {
 
   /** 患者→检查→序列树（FR-2.1） */
   const patientTree = useMemo(() => buildSeriesTree(seriesList), [seriesList]);
+
+  // 缩略图懒生成（FR-2.4）：仅处理缓存中没有的序列；缓存上限 100 条由
+  // setThumbnail 内部保证，超出后新序列显示占位图标。
+  useEffect(() => {
+    const updates: Record<string, string> = {};
+    for (const stack of seriesList) {
+      if (getThumbnail(stack.seriesUid) !== undefined) {
+        continue;
+      }
+      const firstImageId = stack.items[0]?.imageId;
+      if (!firstImageId) {
+        continue;
+      }
+      try {
+        const dataUrl = generateThumbnail(getBufferForImageId(firstImageId));
+        if (dataUrl !== null) {
+          setThumbnail(stack.seriesUid, dataUrl);
+          updates[stack.seriesUid] = dataUrl;
+        }
+      } catch {
+        // 缓冲已被释放等异常：保持占位图标
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      setThumbnails((prev) => ({ ...prev, ...updates }));
+    }
+  }, [seriesList]);
 
   // ── 动作（工具栏 + 快捷键共用） ────────────────────
   const activateTool = useCallback(
@@ -718,6 +753,7 @@ export default function App() {
               patients={patientTree}
               activeUid={assignments[activeViewportId] ?? null}
               onLoadSeries={loadSeriesToViewport}
+              thumbnails={thumbnails}
             />
           </aside>
         )}

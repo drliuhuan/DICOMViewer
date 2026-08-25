@@ -26,6 +26,8 @@ export interface SyntheticDicomOptions {
   perFramePlanePositions?: Array<[number, number, number]>;
   windowWidth?: number;
   windowCenter?: number;
+  /** 覆写 TransferSyntaxUID（默认显式 VR 小端；M2-H 压缩语法测试用） */
+  transferSyntaxUid?: string;
 }
 
 /** 需要长格式长度字段（保留字节 + uint32 长度）的 VR */
@@ -158,7 +160,13 @@ export function buildSyntheticDicom(options: SyntheticDicomOptions = {}): ArrayB
 
   // ── File Meta Group (0002)：先编码到独立缓冲以计算组长度 ──
   const metaBytes: number[] = [];
-  appendElement(metaBytes, 0x0002, 0x0010, 'UI', padToEven('1.2.840.10008.1.2.1', 0)); // Explicit VR Little Endian
+  appendElement(
+    metaBytes,
+    0x0002,
+    0x0010,
+    'UI',
+    padToEven(options.transferSyntaxUid ?? '1.2.840.10008.1.2.1', 0),
+  ); // Explicit VR Little Endian
   appendElement(bytes, 0x0002, 0x0000, 'UL', uint32Bytes(metaBytes.length)); // FileMetaInformationGroupLength
   bytes.push(...metaBytes);
 
