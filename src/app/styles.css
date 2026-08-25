@@ -1,0 +1,201 @@
+:root {
+  color-scheme: dark;
+  --bg: #101418;
+  --panel: #1a2026;
+  --border: #2b3440;
+  --text: #e8ecf0;
+  --text-dim: #8b98a5;
+  --accent: #3aa0ff;
+  --danger: #ff5c5c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    'PingFang SC',
+    'Microsoft YaHei',
+    sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ── 工具栏 ─────────────────────────────── */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.open-button {
+  padding: 6px 18px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #001529;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.open-button:hover {
+  filter: brightness(1.1);
+}
+
+.file-input {
+  display: none;
+}
+
+.toolbar-hint {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* ── 错误提示（非 DICOM / 解析失败） ────── */
+.error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 12px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: #3a1517;
+  color: #ffd9d9;
+  font-size: 14px;
+}
+
+.error-banner button {
+  padding: 4px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  background: transparent;
+  color: #ffd9d9;
+  cursor: pointer;
+}
+
+/* ── 视口区 ─────────────────────────────── */
+.viewport-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin: 8px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #000;
+}
+
+.app--drag-active .viewport-area {
+  border-color: var(--accent);
+}
+
+.viewport-container {
+  position: absolute;
+  inset: 0;
+}
+
+.cornerstone-element {
+  width: 100%;
+  height: 100%;
+}
+
+.viewport-error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 80%;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: rgba(58, 21, 23, 0.92);
+  border: 1px solid var(--danger);
+  color: #ffd9d9;
+  font-size: 13px;
+  text-align: center;
+}
+
+.empty-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  line-height: 2;
+  color: var(--text-dim);
+  font-size: 15px;
+  pointer-events: none;
+}
+
+.drop-overlay {
+  position: absolute;
+  inset: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px dashed var(--accent);
+  border-radius: 10px;
+  background: rgba(17, 42, 66, 0.55);
+  color: #cfe8ff;
+  font-size: 20px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* ── 信息覆盖文字（左上角，M0 最小版） ──── */
+.info-overlay {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 10;
+  pointer-events: none;
+  font-size: 13px;
+  line-height: 1.6;
+  font-family:
+    'JetBrains Mono',
+    Consolas,
+    monospace;
+  color: #eaf6ff;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.9),
+    0 0 4px rgba(0, 0, 0, 0.7);
+}
+
+/* ── 状态栏 ─────────────────────────────── */
+.statusbar {
+  padding: 4px 16px 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
