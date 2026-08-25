@@ -22,9 +22,11 @@ import {
 } from '../features/loading/directoryScan';
 import { ErrorReportPanel } from '../ui/components/ErrorReportPanel';
 import { buildSeriesStacks, type SeriesStack, type StackItem } from '../features/series/buildStacks';
+import { buildSeriesTree } from '../features/series/seriesTree';
+import { SeriesPanel } from '../ui/components/SeriesPanel';
 import type { ViewportApi, ViewportUiState } from '../features/viewer/DicomViewport';
 import { ViewerCell } from '../features/viewer/ViewerCell';
-import { SERIES_UID_MIME, isSeriesDragEvent } from '../features/viewer/seriesDragDrop';
+import { isSeriesDragEvent } from '../features/viewer/seriesDragDrop';
 import {
   PLACEHOLDER_MEASUREMENT_TOOLS,
   ToolNames,
@@ -328,6 +330,9 @@ export default function App() {
 
   const totalInstances = seriesList.reduce((sum, s) => sum + s.items.length, 0);
 
+  /** 患者→检查→序列树（FR-2.1） */
+  const patientTree = useMemo(() => buildSeriesTree(seriesList), [seriesList]);
+
   // ── 动作（工具栏 + 快捷键共用） ────────────────────
   const activateTool = useCallback(
     (toolName: string) => {
@@ -460,7 +465,7 @@ export default function App() {
   return (
     <div className={`app${dragActive ? ' app--drag-active' : ''}`}>
       <header className="toolbar">
-        <span className="brand">DICOM 查看器 · M1</span>
+        <span className="brand">DICOM 查看器 · M2</span>
         <button
           type="button"
           className="open-button"
@@ -707,34 +712,13 @@ export default function App() {
       )}
 
       <main className="workspace">
-        {seriesList.length > 0 && (
-          <aside className="series-panel">
-            <div className="series-panel-title">序列（{seriesList.length}）</div>
-            {seriesList.map((series, index) => (
-              <button
-                type="button"
-                key={series.seriesUid}
-                className={`series-item${
-                  series.seriesUid === assignments[activeViewportId]
-                    ? ' series-item--active'
-                    : ''
-                }`}
-                draggable
-                onDragStart={(event) => {
-                  event.dataTransfer.setData(SERIES_UID_MIME, series.seriesUid);
-                  event.dataTransfer.effectAllowed = 'copy';
-                }}
-                onClick={() => loadSeriesToViewport(series.seriesUid)}
-                title="点击加载到当前激活视口；拖拽到指定视口放置加载"
-              >
-                <span className="series-item-modality">{series.modality}</span>
-                <span className="series-item-label">
-                  序列 {index + 1}
-                  {series.description !== undefined ? ` · ${series.description}` : ''}
-                </span>
-                <span className="series-item-count">{series.items.length} 层</span>
-              </button>
-            ))}
+        {patientTree.length > 0 && (
+          <aside className="series-panel" aria-label="序列面板">
+            <SeriesPanel
+              patients={patientTree}
+              activeUid={assignments[activeViewportId] ?? null}
+              onLoadSeries={loadSeriesToViewport}
+            />
           </aside>
         )}
 
@@ -756,6 +740,11 @@ export default function App() {
                   defaultWwWl={getDefaultWwWl(stack)}
                   showInfo={showInfo}
                   isActive={id === activeViewportId}
+                  badgeLabel={
+                    stack === null
+                      ? null
+                      : `${stack.modality}${stack.description ? ` · ${stack.description}` : ''}`
+                  }
                   onActivate={setActiveViewportId}
                   registerApi={registerApi}
                   onUiChange={handleUiChange}

@@ -378,6 +378,108 @@ body {
   white-space: nowrap;
 }
 
+/* ── 序列树（FR-2.1：患者→检查→序列）────────── */
+.tree-patient {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tree-patient-header {
+  padding: 4px 2px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-patient-id {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+.tree-study {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: 8px;
+  padding-left: 6px;
+  border-left: 2px solid var(--border);
+}
+
+.tree-study-header {
+  padding: 2px 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 序列卡片信息补全（FR-2.2）与缩略图槽位 ── */
+.series-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.series-item-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.series-thumb {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: #10151b;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.series-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.series-thumb-placeholder {
+  color: #44525f;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* ── 视口序列角标（FR-2.8 AC-22）────────────── */
+.viewport-badge {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  z-index: 12;
+  max-width: calc(100% - 60px);
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: rgba(16, 20, 24, 0.72);
+  border: 1px solid var(--border);
+  color: #cfe8ff;
+  font-size: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── 视口网格（FR-3.12：1×1 / 1×2 / 2×2）── */
 .viewer-grid-wrap {
   position: relative;

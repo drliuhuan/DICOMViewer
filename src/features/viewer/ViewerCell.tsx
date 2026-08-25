@@ -17,6 +17,8 @@ interface ViewerCellProps {
   defaultWwWl?: { ww: number; wl: number };
   showInfo: boolean;
   isActive: boolean;
+  /** 视口左上角显示的已加载序列名（FR-2.8 AC-22）；null = 未加载 */
+  badgeLabel: string | null;
   /** 点击/按下时激活该视口 */
   onActivate: (viewportId: string) => void;
   registerApi: (viewportId: string, api: ViewportApi | null) => void;
@@ -31,6 +33,7 @@ export function ViewerCell({
   defaultWwWl,
   showInfo,
   isActive,
+  badgeLabel,
   onActivate,
   registerApi,
   onUiChange,
@@ -106,6 +109,7 @@ export function ViewerCell({
         onApiReady={handleApiReady}
         onUiChange={handleUiChange}
       />
+      {badgeLabel !== null && <div className="viewport-badge">{badgeLabel}</div>}
     </div>
   );
 }

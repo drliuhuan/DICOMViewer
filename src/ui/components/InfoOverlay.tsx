@@ -21,8 +21,8 @@ interface InfoOverlayProps {
   probe: PixelProbe | null;
 }
 
-/** DICOM DA (YYYYMMDD) → YYYY-MM-DD */
-function formatDicomDate(value: string | undefined): string | undefined {
+/** DICOM DA (YYYYMMDD) → YYYY-MM-DD（供序列面板等处复用） */
+export function formatDicomDate(value: string | undefined): string | undefined {
   if (value === undefined || !/^\d{8}$/.test(value)) {
     return value;
   }
