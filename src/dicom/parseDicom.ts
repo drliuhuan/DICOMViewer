@@ -63,6 +63,8 @@ export interface DicomInstanceSummary {
   /** 图像位置（0020,0032），FR-2.3 第三级排序键（切片法向量投影） */
   imagePositionPatient: [number, number, number] | undefined;
   imageOrientationPatient: [number, number, number, number, number, number] | undefined;
+  /** 帧参照 UID（0020,0010）：跨序列空间对齐/融合的前提判断（FR-9.2/9.4） */
+  frameOfReferenceUid?: string | undefined;
   /**
    * 增强型多帧（Enhanced CT/MR）Per-frame Functional Groups Sequence
    * （5200,9230）→ Plane Position Sequence（0020,9113）中逐帧的
@@ -72,6 +74,10 @@ export interface DicomInstanceSummary {
   perFrameImagePositions: Array<[number, number, number]> | undefined;
   windowWidth: number | undefined;
   windowCenter: number | undefined;
+  /** 重缩放斜率（0028,1053）：原始值→标准值（如 HU）的线性变换系数（FR-8/FR-9 统计用原始值） */
+  rescaleSlope?: number | undefined;
+  /** 重缩放截距（0028,1052）：原始值→标准值的线性变换常数 */
+  rescaleIntercept?: number | undefined;
   rows: number;
   columns: number;
   bitsAllocated: number | undefined;
@@ -242,10 +248,13 @@ export function extractInstanceSummary(
             iop[5] ?? 0,
           ]
         : undefined,
+    frameOfReferenceUid: safeString(dataSet, 'x00200010'),
     perFrameImagePositions:
       numberOfFrames > 1 ? extractPerFrameImagePositions(dataSet) : undefined,
     windowWidth: safeNumber(dataSet, 'x00281051'),
     windowCenter: safeNumber(dataSet, 'x00281050'),
+    rescaleSlope: safeNumber(dataSet, 'x00281053'),
+    rescaleIntercept: safeNumber(dataSet, 'x00281052'),
     rows: safeUint16(dataSet, 'x00280010') ?? 0,
     columns: safeUint16(dataSet, 'x00280011') ?? 0,
     bitsAllocated: safeUint16(dataSet, 'x00280100'),
