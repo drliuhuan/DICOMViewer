@@ -285,6 +285,26 @@ export function DicomViewport({
       setRenderError(null);
       setProbe(null);
       publishUi({ sliceIndex: 0, sliceCount: 0 });
+      // 关闭序列后堆栈为空：releaseSeries 只清 cornerstone 缓存/注册表，
+      // 已渲染的图像仍留在画布上，必须同步清空视口（FR-2.9 缺陷修复）。
+      // @cornerstonejs/core@5.8.2 的 StackViewport 无 clear() API，等效清空为
+      // removeAllActors（移除堆栈图像 actor，场景内不再有任何渲染体）+
+      // render（下一帧仅渲染背景 [0,0,0]，画布呈纯黑）；
+      // 后续 setStack 会重新 addActors，无副作用。
+      // 仅当视口内确有 actor 时才清空（幂等：pipeline 就绪重跑 effect、
+      // 从未加载过堆栈等场景不产生多余调用/渲染）。
+      // viewport 未就绪（pipeline 初始化中/已卸载）时静默跳过，与现有容错一致。
+      const viewport = viewportRef.current;
+      if (viewport) {
+        try {
+          if (viewport.getActors().length > 0) {
+            viewport.removeAllActors();
+            viewport.render();
+          }
+        } catch {
+          // 视口禁用/引擎销毁等卸载竞态：静默忽略
+        }
+      }
       return undefined;
     }
     if (!pipelineReady) {

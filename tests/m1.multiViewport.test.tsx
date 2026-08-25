@@ -125,8 +125,12 @@ function makeOpenedFile(seriesUid: string, baseImageId: string) {
 }
 
 function makeViewportStub() {
+  // setStack/removeAllActors 维护 actor 状态，与 cornerstone 实际语义一致
+  let actors: Array<{ uid: string }> = [];
   return {
-    setStack: vi.fn(async () => undefined),
+    setStack: vi.fn(async () => {
+      actors = [{ uid: 'stack-actor' }];
+    }),
     render: vi.fn(),
     setProperties: vi.fn(),
     getProperties: vi.fn(() => ({ voiRange: { lower: -400, upper: 400 } })),
@@ -135,6 +139,10 @@ function makeViewportStub() {
     getZoom: vi.fn(() => 1),
     setCamera: vi.fn(),
     resetCamera: vi.fn(),
+    getActors: vi.fn(() => actors),
+    removeAllActors: vi.fn(() => {
+      actors = [];
+    }),
   };
 }
 

@@ -77,6 +77,8 @@ function makeFakeEngine() {
     getZoom: vi.fn(() => 1),
     setCamera: vi.fn(),
     resetCamera: vi.fn(),
+    getActors: vi.fn(() => [] as Array<{ uid: string }>),
+    removeAllActors: vi.fn(),
   };
   const engine = {
     enableElement: vi.fn(),

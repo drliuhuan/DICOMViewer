@@ -107,8 +107,13 @@ function makeOpenedFile(seriesUid: string, sopInstanceUid: string) {
 }
 
 function makeViewportStub() {
+  // 有状态桩：setStack 添加堆栈 actor，removeAllActors 移除，
+  // 与 @cornerstonejs/core 实际语义一致（getActors 反映当前渲染体）
+  let actors: Array<{ uid: string }> = [];
   return {
-    setStack: vi.fn(async () => undefined),
+    setStack: vi.fn(async () => {
+      actors = [{ uid: 'stack-actor' }];
+    }),
     render: vi.fn(),
     setProperties: vi.fn(),
     getProperties: vi.fn(() => ({ voiRange: { lower: -400, upper: 400 } })),
@@ -117,6 +122,10 @@ function makeViewportStub() {
     getZoom: vi.fn(() => 1),
     setCamera: vi.fn(),
     resetCamera: vi.fn(),
+    getActors: vi.fn(() => actors),
+    removeAllActors: vi.fn(() => {
+      actors = [];
+    }),
   };
 }
 
@@ -151,10 +160,14 @@ describe('数据集关闭与清空（App 集成，FR-2.9）', () => {
 
   async function renderLoaded() {
     const { default: App } = await import('../src/app/App');
+    // 按 viewportId 稳定缓存 viewport 桩，便于断言清空调用
+    const viewports: Record<string, ReturnType<typeof makeViewportStub>> = {};
     getRenderingEngineMock.mockReturnValue({
       enableElement: vi.fn((options: { viewportId: string }) => options),
       disableElement: vi.fn(),
-      getViewport: vi.fn(() => makeViewportStub()),
+      getViewport: vi.fn((viewportId: string) => {
+        return (viewports[viewportId] ??= makeViewportStub());
+      }),
       resize: vi.fn(),
     });
     const view = await act(async () => render(<App />));
@@ -168,7 +181,7 @@ describe('数据集关闭与清空（App 集成，FR-2.9）', () => {
         await Promise.resolve();
       }
     });
-    return view;
+    return { view, viewports };
   }
 
   function findButton(container: HTMLElement, text: string): HTMLButtonElement {
@@ -181,8 +194,8 @@ describe('数据集关闭与清空（App 集成，FR-2.9）', () => {
     return button;
   }
 
-  it('点击卡片 × 关闭该序列：面板移除且另一序列保留；视口清空', async () => {
-    const view = await renderLoaded();
+  it('点击卡片 × 关闭该序列：面板移除且另一序列保留；视口图像清空', async () => {
+    const { view, viewports } = await renderLoaded();
     expect(view.container.querySelectorAll('.series-item')).toHaveLength(2);
     // vp-0 自动加载了首个序列（1.2.a），角标可见
     expect(view.container.querySelector('.vp-0-badge') ?? view.container.querySelector('.viewport-badge')).not.toBeNull();
@@ -195,6 +208,13 @@ describe('数据集关闭与清空（App 集成，FR-2.9）', () => {
     expect(cards[0]?.textContent).toContain('骨窗');
     // 被关闭序列所在视口的角标消失（未再指派）
     expect(view.container.textContent).toContain('已关闭序列并释放内存');
+    // FR-2.9 缺陷修复：vp-0 视口图像被清空（removeAllActors + render）；
+    // 1×1 布局下 vp-1 未挂载，自然不受影响
+    const vp0 = viewports['vp-0'];
+    expect(vp0).toBeDefined();
+    expect(vp0?.removeAllActors).toHaveBeenCalledTimes(1);
+    expect(vp0?.render).toHaveBeenCalled();
+    expect(viewports['vp-1']).toBeUndefined();
   });
 
   it('「清空全部」确认后清空面板与状态；取消则不动作', async () => {
@@ -202,7 +222,7 @@ describe('数据集关闭与清空（App 集成，FR-2.9）', () => {
 
     // 取消分支
     confirmSpy.mockReturnValue(false);
-    const view = await renderLoaded();
+    const { view, viewports } = await renderLoaded();
     fireEvent.click(findButton(view.container, '清空全部'));
     await settle();
     expect(confirmSpy).toHaveBeenCalledTimes(1);
@@ -216,11 +236,13 @@ describe('数据集关闭与清空（App 集成，FR-2.9）', () => {
     expect(view.container.querySelectorAll('.series-item')).toHaveLength(0);
     expect(view.container.textContent).toContain('已清空全部数据');
     expect(view.container.querySelector('.series-panel')).toBeNull();
+    // releaseAll 路径：所有视口 assignments 置 null → vp-0 视口图像同样被清空
+    expect(viewports['vp-0']?.removeAllActors).toHaveBeenCalledTimes(1);
     confirmSpy.mockRestore();
   });
 
   it('关闭后重新打开同一文件不被去重拦截（UID 标记已撤销）', async () => {
-    const view = await renderLoaded();
+    const { view } = await renderLoaded();
 
     fireEvent.click(view.container.querySelectorAll('.series-item-close')[0]!);
     await settle();
