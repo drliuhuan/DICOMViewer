@@ -3,7 +3,8 @@
  *
  * - 布局：1×1 / 1×2 / 2×2（按钮 + 快捷键 1/2/4），各视口独立加载序列；
  * - 激活视口：点击视口切换；工具栏与快捷键作用于激活视口；
- * - 序列面板：点击序列加载到当前激活视口（FR-2.8 单击语义的最小版）。
+ * - 序列面板：点击序列加载到当前激活视口；拖拽序列卡片到指定视口放置加载
+ *   （FR-2.8 单击语义 + 拖拽扩展）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -13,6 +14,7 @@ import {
 import { buildSeriesStacks, type SeriesStack, type StackItem } from '../features/series/buildStacks';
 import type { ViewportApi, ViewportUiState } from '../features/viewer/DicomViewport';
 import { ViewerCell } from '../features/viewer/ViewerCell';
+import { SERIES_UID_MIME, isSeriesDragEvent } from '../features/viewer/seriesDragDrop';
 import {
   PLACEHOLDER_MEASUREMENT_TOOLS,
   ToolNames,
@@ -137,17 +139,23 @@ export default function App() {
     }
   }, []);
 
-  // 全窗口拖拽入口（FR-1.1）
+  // 全窗口拖拽入口（FR-1.1）；内部序列卡片拖拽（自定义 MIME）不触发文件打开 UI
   useEffect(() => {
     const onDragOver = (event: DragEvent) => {
       event.preventDefault();
     };
     const onDragEnter = (event: DragEvent) => {
+      if (isSeriesDragEvent(event)) {
+        return;
+      }
       event.preventDefault();
       dragDepthRef.current += 1;
       setDragActive(true);
     };
     const onDragLeave = (event: DragEvent) => {
+      if (isSeriesDragEvent(event)) {
+        return;
+      }
       event.preventDefault();
       dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
       if (dragDepthRef.current === 0) {
@@ -158,6 +166,10 @@ export default function App() {
       event.preventDefault();
       dragDepthRef.current = 0;
       setDragActive(false);
+      // 内部序列拖拽由视口单元格处理，不走文件打开
+      if (isSeriesDragEvent(event)) {
+        return;
+      }
       void handleFiles(Array.from(event.dataTransfer?.files ?? []));
     };
     window.addEventListener('dragover', onDragOver);
@@ -253,11 +265,15 @@ export default function App() {
     [activeViewportId],
   );
 
+  const loadSeriesTo = useCallback((viewportId: string, seriesUid: string) => {
+    setAssignments((prev) => ({ ...prev, [viewportId]: seriesUid }));
+  }, []);
+
   const loadSeriesToViewport = useCallback(
     (seriesUid: string) => {
-      setAssignments((prev) => ({ ...prev, [activeViewportId]: seriesUid }));
+      loadSeriesTo(activeViewportId, seriesUid);
     },
-    [activeViewportId],
+    [activeViewportId, loadSeriesTo],
   );
 
   const switchLayout = useCallback((cells: number) => {
@@ -577,8 +593,13 @@ export default function App() {
                     ? ' series-item--active'
                     : ''
                 }`}
+                draggable
+                onDragStart={(event) => {
+                  event.dataTransfer.setData(SERIES_UID_MIME, series.seriesUid);
+                  event.dataTransfer.effectAllowed = 'copy';
+                }}
                 onClick={() => loadSeriesToViewport(series.seriesUid)}
-                title="点击加载到当前激活视口"
+                title="点击加载到当前激活视口；拖拽到指定视口放置加载"
               >
                 <span className="series-item-modality">{series.modality}</span>
                 <span className="series-item-label">
@@ -612,6 +633,7 @@ export default function App() {
                   onActivate={setActiveViewportId}
                   registerApi={registerApi}
                   onUiChange={handleUiChange}
+                  onDropSeries={loadSeriesTo}
                 />
               );
             })}

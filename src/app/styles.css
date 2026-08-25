@@ -267,8 +267,12 @@ body {
   background: transparent;
   color: var(--text);
   font-size: 13px;
-  cursor: pointer;
+  cursor: grab;
   text-align: left;
+}
+
+.series-item:active {
+  cursor: grabbing;
 }
 
 .series-item:hover {
@@ -331,6 +335,13 @@ body {
 .viewport-cell--active,
 .viewport-cell--active .cornerstone-element {
   border-color: var(--accent);
+}
+
+/* 序列卡片拖拽悬停态：虚线高亮提示可放置 */
+.viewport-cell--drop-target {
+  border-color: var(--accent);
+  border-style: dashed;
+  background: rgba(58, 160, 255, 0.08);
 }
 
 .app--drag-active .viewer-grid-wrap {
