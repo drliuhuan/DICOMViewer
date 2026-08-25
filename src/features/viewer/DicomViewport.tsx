@@ -11,13 +11,7 @@
  * - 通过 onApiReady 上报命令式操作接口，供工具栏与全局快捷键调用。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Enums,
-  RenderingEngine,
-  cache,
-  getRenderingEngine,
-  utilities,
-} from '@cornerstonejs/core';
+import { Enums, RenderingEngine, cache, getRenderingEngine, utilities } from '@cornerstonejs/core';
 import type { Types } from '@cornerstonejs/core';
 import {
   createBoundToolGroup,
@@ -27,12 +21,12 @@ import {
 } from './toolSetup';
 import { voiRangeFromWwWl } from './wwPresets';
 import { formatGrayValue, samplePixel } from '../../dicom/pixelProbe';
+import { initializeDicomPipeline } from '../../dicom/init';
 import type { PixelProbe } from './probeTypes';
 import type { StackItem } from '../series/buildStacks';
 import { InfoOverlay } from '../../ui/components/InfoOverlay';
 
 const RENDERING_ENGINE_ID = 'dicom-viewer-m1-engine';
-
 
 /** 缩放下限（parallelScale 最小值，世界 mm），防止过度放大后除零/翻转 */
 const MIN_PARALLEL_SCALE = 1e-3;
@@ -82,10 +76,7 @@ interface DicomViewportProps {
 
 /** 取应用级单例渲染引擎（生命周期 = 应用，视口随组件挂载/卸载启用/禁用） */
 function getSharedRenderingEngine(): RenderingEngine {
-  return (
-    getRenderingEngine(RENDERING_ENGINE_ID) ??
-    new RenderingEngine(RENDERING_ENGINE_ID)
-  );
+  return getRenderingEngine(RENDERING_ENGINE_ID) ?? new RenderingEngine(RENDERING_ENGINE_ID);
 }
 
 function voiToWwWl(range: Types.VOIRange | undefined): { ww: number; wl: number } {
@@ -112,6 +103,7 @@ export function DicomViewport({
   const defaultWwWlRef = useRef<{ ww: number; wl: number } | undefined>(defaultWwWl);
   const probeRafRef = useRef(0);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [pipelineReady, setPipelineReady] = useState(false);
   const [probe, setProbe] = useState<PixelProbe | null>(null);
   const [uiState, setUiState] = useState<ViewportUiState>({
     sliceIndex: 0,
@@ -137,7 +129,8 @@ export function DicomViewport({
     [onUiChange],
   );
 
-  // 挂载期：初始化工具管线 + 启用视口 + 创建 ToolGroup；卸载期清理
+  // 挂载期：初始化渲染/解析管线与工具（await 完成后才 enableElement）；
+  // 卸载期清理。pipelineReady 变 true 后堆栈加载 effect 才允许读 viewportRef。
   useEffect(() => {
     const element = containerRef.current;
     if (!element) {
@@ -146,109 +139,120 @@ export function DicomViewport({
     let toolGroup: ReturnType<typeof createBoundToolGroup> | null = null;
     let disposed = false;
 
-    void initializeTools().then(() => {
-      if (disposed) {
-        return;
-      }
-      const renderingEngine = getSharedRenderingEngine();
-      renderingEngine.enableElement({
-        viewportId,
-        element,
-        type: Enums.ViewportType.STACK,
-        defaultOptions: { background: [0, 0, 0] },
-      });
-      const viewport =
-        renderingEngine.getViewport<Types.IStackViewport>(viewportId);
-      viewportRef.current = viewport;
-      toolGroup = createBoundToolGroup(RENDERING_ENGINE_ID, viewportId);
+    void (async () => {
+      try {
+        await Promise.all([initializeDicomPipeline(), initializeTools()]);
+        if (disposed) {
+          return;
+        }
+        const renderingEngine = getSharedRenderingEngine();
+        renderingEngine.enableElement({
+          viewportId,
+          element,
+          type: Enums.ViewportType.STACK,
+          defaultOptions: { background: [0, 0, 0] },
+        });
+        const viewport = renderingEngine.getViewport<Types.IStackViewport>(viewportId);
+        viewportRef.current = viewport;
+        toolGroup = createBoundToolGroup(RENDERING_ENGINE_ID, viewportId);
 
-      onApiReady?.({
-        scrollSlice: (delta) => {
-          const vp = viewportRef.current;
-          if (vp) {
-            utilities.scroll(vp, { delta });
-          }
-        },
-        setImageIndex: (index) => {
-          void viewportRef.current?.setImageIdIndex(index);
-        },
-        setPrimaryTool: (toolName) => {
-          if (toolGroup) {
-            syncToolBindings(toolGroup, toolName);
-          }
-        },
-        applyWwWl: (ww, wl) => {
-          const vp = viewportRef.current;
-          if (!vp || !Number.isFinite(ww) || ww <= 0 || !Number.isFinite(wl)) {
-            return;
-          }
-          vp.setProperties({ voiRange: voiRangeFromWwWl(ww, wl) });
-          vp.render();
-        },
-        resetWindowLevel: () => {
-          const vp = viewportRef.current;
-          const fallback = defaultWwWlRef.current;
-          if (!vp || !fallback) {
-            return;
-          }
-          vp.setProperties({ voiRange: voiRangeFromWwWl(fallback.ww, fallback.wl) });
-          vp.render();
-        },
-        zoomStep: (factor) => {
-          const vp = viewportRef.current;
-          if (!vp || !Number.isFinite(factor) || factor <= 0) {
-            return;
-          }
-          const parallelScale = vp.getCamera().parallelScale;
-          if (typeof parallelScale !== 'number' || !Number.isFinite(parallelScale)) {
-            return;
-          }
-          vp.setCamera({
-            parallelScale: Math.max(parallelScale / factor, MIN_PARALLEL_SCALE),
-          });
-          vp.render();
-        },
-        oneToOne: () => {
-          const vp = viewportRef.current;
-          if (!vp) {
-            return;
-          }
-          // 1:1：屏幕一个 CSS 像素对应一个图像像素。
-          // 平行投影下 parallelScale（世界 mm）= 视口高 px × 行间距 mm / 2
-          const imageData = vp.getImageData();
-          if (!imageData) {
-            return;
-          }
-          const spacingY = imageData.spacing[1] ?? 1;
-          const clientHeight = vp.element?.clientHeight ?? 0;
-          if (clientHeight <= 0) {
-            return;
-          }
-          const desired = (clientHeight * spacingY) / 2;
-          vp.setCamera({
-            parallelScale: Math.max(desired, MIN_PARALLEL_SCALE),
-          });
-          vp.render();
-        },
-        fitToWindow: () => {
-          const vp = viewportRef.current;
-          vp?.resetCamera({ resetPan: true, resetZoom: true });
-          vp?.render();
-        },
-        resetView: () => {
-          const vp = viewportRef.current;
-          if (!vp) {
-            return;
-          }
-          const fallback = defaultWwWlRef.current;
-          if (fallback) {
+        onApiReady?.({
+          scrollSlice: (delta) => {
+            const vp = viewportRef.current;
+            if (vp) {
+              utilities.scroll(vp, { delta });
+            }
+          },
+          setImageIndex: (index) => {
+            void viewportRef.current?.setImageIdIndex(index);
+          },
+          setPrimaryTool: (toolName) => {
+            if (toolGroup) {
+              syncToolBindings(toolGroup, toolName);
+            }
+          },
+          applyWwWl: (ww, wl) => {
+            const vp = viewportRef.current;
+            if (!vp || !Number.isFinite(ww) || ww <= 0 || !Number.isFinite(wl)) {
+              return;
+            }
+            vp.setProperties({ voiRange: voiRangeFromWwWl(ww, wl) });
+            vp.render();
+          },
+          resetWindowLevel: () => {
+            const vp = viewportRef.current;
+            const fallback = defaultWwWlRef.current;
+            if (!vp || !fallback) {
+              return;
+            }
             vp.setProperties({ voiRange: voiRangeFromWwWl(fallback.ww, fallback.wl) });
-          }
-          vp.resetCamera({ resetPan: true, resetZoom: true });
-          vp.render();
-        },
-      });
-    });
+            vp.render();
+          },
+          zoomStep: (factor) => {
+            const vp = viewportRef.current;
+            if (!vp || !Number.isFinite(factor) || factor <= 0) {
+              return;
+            }
+            const parallelScale = vp.getCamera().parallelScale;
+            if (typeof parallelScale !== 'number' || !Number.isFinite(parallelScale)) {
+              return;
+            }
+            vp.setCamera({
+              parallelScale: Math.max(parallelScale / factor, MIN_PARALLEL_SCALE),
+            });
+            vp.render();
+          },
+          oneToOne: () => {
+            const vp = viewportRef.current;
+            if (!vp) {
+              return;
+            }
+            // 1:1：屏幕一个 CSS 像素对应一个图像像素。
+            // 平行投影下 parallelScale（世界 mm）= 视口高 px × 行间距 mm / 2
+            const imageData = vp.getImageData();
+            if (!imageData) {
+              return;
+            }
+            const spacingY = imageData.spacing[1] ?? 1;
+            const clientHeight = vp.element?.clientHeight ?? 0;
+            if (clientHeight <= 0) {
+              return;
+            }
+            const desired = (clientHeight * spacingY) / 2;
+            vp.setCamera({
+              parallelScale: Math.max(desired, MIN_PARALLEL_SCALE),
+            });
+            vp.render();
+          },
+          fitToWindow: () => {
+            const vp = viewportRef.current;
+            vp?.resetCamera({ resetPan: true, resetZoom: true });
+            vp?.render();
+          },
+          resetView: () => {
+            const vp = viewportRef.current;
+            if (!vp) {
+              return;
+            }
+            const fallback = defaultWwWlRef.current;
+            if (fallback) {
+              vp.setProperties({ voiRange: voiRangeFromWwWl(fallback.ww, fallback.wl) });
+            }
+            vp.resetCamera({ resetPan: true, resetZoom: true });
+            vp.render();
+          },
+        });
+        // 管线就绪：通知堆栈加载 effect 可以安全读取 viewportRef
+        if (!disposed) {
+          setPipelineReady(true);
+        }
+      } catch (error) {
+        console.error('[DicomViewport] 渲染管线初始化失败', error);
+        if (!disposed) {
+          setRenderError(error instanceof Error ? error.message : String(error));
+        }
+      }
+    })();
 
     return () => {
       disposed = true;
@@ -262,12 +266,17 @@ export function DicomViewport({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewportId]);
 
-  // 堆栈变化时加载并渲染；应用默认 WW/WL；同步层数状态
+  // 堆栈变化时加载并渲染；应用默认 WW/WL；同步层数状态。
+  // pipelineReady 未就绪时静默跳过（不报错），就绪后由依赖数组触发重新加载，
+  // 从而保证 viewportRef.current 被读时 enableElement 必已完成。
   useEffect(() => {
     if (imageIds.length === 0) {
       setRenderError(null);
       setProbe(null);
       publishUi({ sliceIndex: 0, sliceCount: 0 });
+      return undefined;
+    }
+    if (!pipelineReady) {
       return undefined;
     }
     let cancelled = false;
@@ -297,16 +306,14 @@ export function DicomViewport({
       } catch (error) {
         console.error('[DicomViewport] 显示失败', error);
         if (!cancelled) {
-          setRenderError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setRenderError(error instanceof Error ? error.message : String(error));
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [imageIds, publishUi]);
+  }, [imageIds, pipelineReady, publishUi]);
 
   // 视口事件订阅：翻页滚动 → 层号；VOI 变化 → WW/WL；相机变化 → 缩放比例；
   // 双击 → 适应窗口（FR-3.4/FR-14.1 桌面语义）
@@ -316,8 +323,7 @@ export function DicomViewport({
       return undefined;
     }
     const onScroll = (event: Event) => {
-      const detail = (event as CustomEvent<Types.EventTypes.StackViewportScrollEventDetail>)
-        .detail;
+      const detail = (event as CustomEvent<Types.EventTypes.StackViewportScrollEventDetail>).detail;
       publishUi({ sliceIndex: detail.newImageIdIndex });
     };
     const onVoiModified = (event: Event) => {
@@ -402,19 +408,18 @@ export function DicomViewport({
           return;
         }
         const components = image.color ? 3 : 1;
-        const sampled = samplePixel(
-          image.getPixelData(),
-          image.width,
-          x,
-          y,
-          components,
-        );
+        const sampled = samplePixel(image.getPixelData(), image.width, x, y, components);
         setProbe({
           imageX: x,
           imageY: y,
           valueText:
             sampled !== null
-              ? formatGrayValue(sampled, imageData.metadata.Modality ?? '', image.slope, image.intercept)
+              ? formatGrayValue(
+                  sampled,
+                  imageData.metadata.Modality ?? '',
+                  image.slope,
+                  image.intercept,
+                )
               : null,
         });
       } catch {
