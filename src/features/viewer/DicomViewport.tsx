@@ -118,16 +118,27 @@ export function DicomViewport({
     defaultWwWlRef.current = defaultWwWl;
   }, [defaultWwWl]);
 
-  const publishUi = useCallback(
-    (partial: Partial<ViewportUiState>) => {
-      setUiState((prev) => {
-        const next = { ...prev, ...partial };
-        onUiChange?.(next);
-        return next;
-      });
-    },
-    [onUiChange],
-  );
+  // UI 快照更新：内容不变时返回原引用（避免无谓 re-render）。
+  // 注意不得在 updater 内调用 onUiChange（父组件 setState）——
+  // 那会把父组件更新嵌进本组件渲染阶段，多视口下互相触发成死循环；
+  // 父组件通知由下方专用 effect 在提交后完成。
+  const publishUi = useCallback((partial: Partial<ViewportUiState>) => {
+    setUiState((prev) => {
+      const next = { ...prev, ...partial };
+      return prev.sliceIndex === next.sliceIndex &&
+        prev.sliceCount === next.sliceCount &&
+        prev.ww === next.ww &&
+        prev.wl === next.wl &&
+        prev.zoom === next.zoom
+        ? prev
+        : next;
+    });
+  }, []);
+
+  // uiState 变化后向父组件同步（提交阶段执行，安全触发父 setState）
+  useEffect(() => {
+    onUiChange?.(uiState);
+  }, [onUiChange, uiState]);
 
   // 挂载期：初始化渲染/解析管线与工具（await 完成后才 enableElement）；
   // 卸载期清理。pipelineReady 变 true 后堆栈加载 effect 才允许读 viewportRef。

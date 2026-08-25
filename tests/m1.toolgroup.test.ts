@@ -157,6 +157,36 @@ describe('createBoundToolGroup', () => {
     expect(group.addViewport).toHaveBeenCalledWith('vp-c', 'engine-c');
   });
 
+  it('同一引擎下多个视口各自创建独立 ToolGroup（id 含 viewportId 且唯一）', () => {
+    // 回归缺陷锁：ToolGroupManager 以 id 全局唯一存储，若以共享引擎 id
+    // 命名，第二个视口会因重名拿到 undefined → 视口空白。
+    vi.mocked(ToolGroupManager.createToolGroup).mockClear();
+    createBoundToolGroup('shared-engine', 'vp-0');
+    createBoundToolGroup('shared-engine', 'vp-1');
+    createBoundToolGroup('shared-engine', 'vp-2');
+
+    expect(ToolGroupManager.createToolGroup).toHaveBeenCalledTimes(3);
+    const ids = vi.mocked(ToolGroupManager.createToolGroup).mock.calls.map(
+      ([id]) => id,
+    );
+    expect(ids).toEqual(['shared-engine:vp-0', 'shared-engine:vp-1', 'shared-engine:vp-2']);
+    expect(new Set(ids).size).toBe(3);
+
+    // 每个组只挂载自己的视口
+    expect((toolGroups[0] as FakeToolGroup).addViewport).toHaveBeenCalledWith(
+      'vp-0',
+      'shared-engine',
+    );
+    expect((toolGroups[1] as FakeToolGroup).addViewport).toHaveBeenCalledWith(
+      'vp-1',
+      'shared-engine',
+    );
+    expect((toolGroups[2] as FakeToolGroup).addViewport).toHaveBeenCalledWith(
+      'vp-2',
+      'shared-engine',
+    );
+  });
+
   it('默认主工具 WindowLevel 以 Primary 绑定保持 Active（回归保护）', () => {
     createBoundToolGroup('engine-d', 'vp-d');
     const group = lastFakeToolGroup();

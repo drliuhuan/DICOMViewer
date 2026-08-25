@@ -10,7 +10,7 @@ import {
   openDicomFiles,
   type LoadFailure,
 } from '../features/loading/openDicomFiles';
-import { buildSeriesStacks, type SeriesStack } from '../features/series/buildStacks';
+import { buildSeriesStacks, type SeriesStack, type StackItem } from '../features/series/buildStacks';
 import type { ViewportApi, ViewportUiState } from '../features/viewer/DicomViewport';
 import { ViewerCell } from '../features/viewer/ViewerCell';
 import {
@@ -47,6 +47,9 @@ const LAYOUT_BY_CELLS: Readonly<Record<number, LayoutKey>> = {
   4: '2x2',
 };
 const ALL_VIEWPORT_IDS = ['vp-0', 'vp-1', 'vp-2', 'vp-3'] as const;
+
+/** 空视口共享的稳定空数组：保证 items/imageIds 引用稳定，避免 effect 反复重跑 */
+const EMPTY_ITEMS: StackItem[] = [];
 
 const EMPTY_UI: ViewportUiState = {
   sliceIndex: 0,
@@ -602,7 +605,7 @@ export default function App() {
                 <ViewerCell
                   key={id}
                   viewportId={id}
-                  items={stack?.items ?? []}
+                  items={stack?.items ?? EMPTY_ITEMS}
                   defaultWwWl={getDefaultWwWl(stack)}
                   showInfo={showInfo}
                   isActive={id === activeViewportId}

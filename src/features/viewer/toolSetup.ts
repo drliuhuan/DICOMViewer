@@ -116,12 +116,19 @@ export function initializeTools(): Promise<void> {
 /**
  * 为视口创建 ToolGroup 并应用默认绑定（主工具=窗宽窗位）。
  * 调用前须完成 initializeTools()。
+ *
+ * ToolGroup id 必须按视口唯一：ToolGroupManager 以 id 全局唯一存储，
+ * 多视口共享同一 RenderingEngine 时若以引擎 id 命名，第二个视口
+ * createToolGroup 会因重名返回 undefined（仅 console.warn）→
+ * 视口初始化失败、pipelineReady 永不就绪 → 该视口空白。
  */
 export function createBoundToolGroup(
   renderingEngineId: string,
   viewportId: string,
 ): ToolGroup {
-  const toolGroup = ToolGroupManager.createToolGroup(renderingEngineId);
+  const toolGroup = ToolGroupManager.createToolGroup(
+    `${renderingEngineId}:${viewportId}`,
+  );
   if (!toolGroup) {
     throw new Error(`创建 ToolGroup 失败: ${renderingEngineId}/${viewportId}`);
   }
