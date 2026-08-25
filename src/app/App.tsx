@@ -1,6 +1,9 @@
 /**
- * 应用壳：工具栏、全窗口拖拽、错误提示、视口与序列面板。
- * 工具/视图操作通过 DicomViewport 上报的命令式 API 驱动。
+ * 应用壳：工具栏、全局快捷键、序列面板、多视口布局（FR-3.12 最小集）。
+ *
+ * - 布局：1×1 / 1×2 / 2×2（按钮 + 快捷键 1/2/4），各视口独立加载序列；
+ * - 激活视口：点击视口切换；工具栏与快捷键作用于激活视口；
+ * - 序列面板：点击序列加载到当前激活视口（FR-2.8 单击语义的最小版）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -8,13 +11,12 @@ import {
   type LoadFailure,
 } from '../features/loading/openDicomFiles';
 import { buildSeriesStacks, type SeriesStack } from '../features/series/buildStacks';
+import type { ViewportApi, ViewportUiState } from '../features/viewer/DicomViewport';
+import { ViewerCell } from '../features/viewer/ViewerCell';
 import {
-  DicomViewport,
-  STACK_VIEWPORT_ID,
-  type ViewportApi,
-  type ViewportUiState,
-} from '../features/viewer/DicomViewport';
-import { PLACEHOLDER_MEASUREMENT_TOOLS, ToolNames } from '../features/viewer/toolSetup';
+  PLACEHOLDER_MEASUREMENT_TOOLS,
+  ToolNames,
+} from '../features/viewer/toolSetup';
 import {
   WW_WL_PRESETS,
   findPresetById,
@@ -31,6 +33,21 @@ type LoadState =
   | { status: 'loaded' }
   | { status: 'error'; message: string };
 
+type LayoutKey = '1x1' | '1x2' | '2x2';
+
+/** 布局档位定义（FR-3.12 P0 最小集） */
+const LAYOUT_CONFIG: Readonly<Record<LayoutKey, { cells: number; columns: number }>> = {
+  '1x1': { cells: 1, columns: 1 },
+  '1x2': { cells: 2, columns: 2 },
+  '2x2': { cells: 4, columns: 2 },
+};
+const LAYOUT_BY_CELLS: Readonly<Record<number, LayoutKey>> = {
+  1: '1x1',
+  2: '1x2',
+  4: '2x2',
+};
+const ALL_VIEWPORT_IDS = ['vp-0', 'vp-1', 'vp-2', 'vp-3'] as const;
+
 const EMPTY_UI: ViewportUiState = {
   sliceIndex: 0,
   sliceCount: 0,
@@ -44,25 +61,47 @@ export default function App() {
   const [dragActive, setDragActive] = useState(false);
   const [seriesList, setSeriesList] = useState<SeriesStack[]>([]);
   const [failures, setFailures] = useState<LoadFailure[]>([]);
-  const [activeSeriesUid, setActiveSeriesUid] = useState<string | null>(null);
+  /** 视口 id → 已加载的序列 uid（null = 空视口） */
+  const [assignments, setAssignments] = useState<Record<string, string | null>>(
+    Object.fromEntries(ALL_VIEWPORT_IDS.map((id) => [id, null])),
+  );
+  const [layout, setLayout] = useState<LayoutKey>('1x1');
+  const [activeViewportId, setActiveViewportId] = useState<string>('vp-0');
   /** 当前主拖动工具（null = 默认窗宽窗位） */
-  const [primaryTool, setPrimaryTool] = useState<string | null>(ToolNames.windowLevel);
-  const [ui, setUi] = useState<ViewportUiState>(EMPTY_UI);
+  const [primaryTool, setPrimaryTool] = useState<string>(ToolNames.windowLevel);
+  const [showInfo, setShowInfo] = useState(true);
+  const [uiMap, setUiMap] = useState<Record<string, ViewportUiState>>({});
   /** WW/WL 输入框草稿（允许清空/中间态，失焦或回车时提交） */
   const [wwDraft, setWwDraft] = useState('');
   const [wlDraft, setWlDraft] = useState('');
-  /** 信息覆盖文字全局开关（FR-4.1，I 键 / 工具栏按钮） */
-  const [showInfo, setShowInfo] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
+
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const apiRef = useRef<ViewportApi | null>(null);
+  const apisRef = useRef<Map<string, ViewportApi>>(new Map());
 
   const showToast = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(null), 2200);
   }, []);
 
+  // ── 视口注册与状态收集 ──────────────────────────────
+  const registerApi = useCallback((id: string, api: ViewportApi | null) => {
+    if (api === null) {
+      apisRef.current.delete(id);
+    } else {
+      apisRef.current.set(id, api);
+    }
+  }, []);
+  const handleUiChange = useCallback((id: string, ui: ViewportUiState) => {
+    setUiMap((prev) => ({ ...prev, [id]: ui }));
+  }, []);
+
+  const activeApi = apisRef.current.get(activeViewportId) ?? null;
+  const activeUi = uiMap[activeViewportId] ?? EMPTY_UI;
+  const hasStack = activeUi.sliceCount > 0;
+
+  // ── 文件打开 ────────────────────────────────────────
   const handleFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) {
       return;
@@ -76,12 +115,15 @@ export default function App() {
       if (stacks.length === 0) {
         setLoadState({
           status: 'error',
-          message:
-            failed[0]?.message ?? '没有可显示的 DICOM 文件',
+          message: failed[0]?.message ?? '没有可显示的 DICOM 文件',
         });
         return;
       }
-      setActiveSeriesUid(stacks[0]?.seriesUid ?? null);
+      const firstUid = stacks[0]?.seriesUid ?? null;
+      setAssignments(
+        Object.fromEntries(ALL_VIEWPORT_IDS.map((id) => [id, id === 'vp-0' ? firstUid : null])),
+      );
+      setActiveViewportId('vp-0');
       setLoadState({ status: 'loaded' });
     } catch (error) {
       console.error('[App] 打开文件失败', error);
@@ -127,12 +169,38 @@ export default function App() {
     };
   }, [handleFiles]);
 
-  const activeStack = useMemo(
-    () => seriesList.find((series) => series.seriesUid === activeSeriesUid) ?? null,
-    [seriesList, activeSeriesUid],
+  // ── 派生数据 ────────────────────────────────────────
+  const stackByUid = useMemo(() => {
+    const map = new Map<string, SeriesStack>();
+    for (const stack of seriesList) {
+      map.set(stack.seriesUid, stack);
+    }
+    return map;
+  }, [seriesList]);
+
+  const activeStack =
+    activeViewportId !== null
+      ? (stackByUid.get(assignments[activeViewportId] ?? '') ?? null)
+      : null;
+
+  /** 指定堆栈的默认窗宽窗位（文件自带优先，其次模态预设） */
+  const getDefaultWwWl = useCallback(
+    (stack: SeriesStack | null) => {
+      if (stack === null) {
+        return undefined;
+      }
+      const summary = stack.items[0]?.summary;
+      return getDefaultWwWlForModality(summary?.modality ?? '', {
+        windowWidth: summary?.windowWidth,
+        windowCenter: summary?.windowCenter,
+      });
+    },
+    [],
   );
 
-  /** 激活主拖动工具；测量类工具为 M3 占位 */
+  const totalInstances = seriesList.reduce((sum, s) => sum + s.items.length, 0);
+
+  // ── 动作（工具栏 + 快捷键共用） ────────────────────
   const activateTool = useCallback(
     (toolName: string) => {
       if (PLACEHOLDER_MEASUREMENT_TOOLS.includes(toolName)) {
@@ -144,25 +212,20 @@ export default function App() {
           ? ToolNames.windowLevel
           : toolName;
       setPrimaryTool(next);
-      apiRef.current?.setPrimaryTool(next);
+      apisRef.current.get(activeViewportId)?.setPrimaryTool(next);
     },
-    [primaryTool, showToast],
+    [activeViewportId, primaryTool, showToast],
   );
-
-  const scrollSlice = useCallback((delta: number) => {
-    apiRef.current?.scrollSlice(delta);
-  }, []);
 
   // 视口 WW/WL 变化（拖动/预设/重置）→ 同步输入框草稿与预设选中态
   useEffect(() => {
-    setWwDraft(String(ui.ww));
-    setWlDraft(String(ui.wl));
-  }, [ui.ww, ui.wl]);
+    setWwDraft(String(activeUi.ww));
+    setWlDraft(String(activeUi.wl));
+  }, [activeUi.ww, activeUi.wl]);
 
   const activePresetId = useMemo(
-    () =>
-      WW_WL_PRESETS.find((p) => p.ww === ui.ww && p.wl === ui.wl)?.id ?? '',
-    [ui.ww, ui.wl],
+    () => WW_WL_PRESETS.find((p) => p.ww === activeUi.ww && p.wl === activeUi.wl)?.id ?? '',
+    [activeUi.ww, activeUi.wl],
   );
 
   /** 提交输入框草稿为窗宽窗位；非法值回退到当前生效值 */
@@ -170,38 +233,44 @@ export default function App() {
     const ww = Number(wwDraft);
     const wl = Number(wlDraft);
     if (Number.isFinite(ww) && ww > 0 && Number.isFinite(wl)) {
-      apiRef.current?.applyWwWl(ww, wl);
+      apisRef.current.get(activeViewportId)?.applyWwWl(ww, wl);
     } else {
-      setWwDraft(String(ui.ww));
-      setWlDraft(String(ui.wl));
+      setWwDraft(String(activeUi.ww));
+      setWlDraft(String(activeUi.wl));
     }
-  }, [wwDraft, wlDraft, ui.ww, ui.wl]);
+  }, [wwDraft, wlDraft, activeUi.ww, activeUi.wl, activeViewportId]);
 
-  const applyPreset = useCallback((presetId: string) => {
-    const preset = findPresetById(presetId);
-    if (preset) {
-      apiRef.current?.applyWwWl(preset.ww, preset.wl);
+  const applyPreset = useCallback(
+    (presetId: string) => {
+      const preset = findPresetById(presetId);
+      if (preset) {
+        apisRef.current.get(activeViewportId)?.applyWwWl(preset.ww, preset.wl);
+      }
+    },
+    [activeViewportId],
+  );
+
+  const loadSeriesToViewport = useCallback(
+    (seriesUid: string) => {
+      setAssignments((prev) => ({ ...prev, [activeViewportId]: seriesUid }));
+    },
+    [activeViewportId],
+  );
+
+  const switchLayout = useCallback((cells: number) => {
+    const key = LAYOUT_BY_CELLS[cells];
+    if (key === undefined) {
+      return;
     }
+    setLayout(key);
+    setActiveViewportId((prev) =>
+      ALL_VIEWPORT_IDS.slice(0, cells).includes(prev as (typeof ALL_VIEWPORT_IDS)[number])
+        ? prev
+        : 'vp-0',
+    );
   }, []);
 
-  /** 当前堆栈的默认窗宽窗位（文件自带优先，其次模态预设） */
-  const defaultWwWl = useMemo(() => {
-    if (activeStack === null) {
-      return undefined;
-    }
-    const summary = activeStack.items[0]?.summary;
-    return getDefaultWwWlForModality(summary?.modality ?? '', {
-      windowWidth: summary?.windowWidth,
-      windowCenter: summary?.windowCenter,
-    });
-  }, [activeStack]);
-
-  /** 全局视图重置（FR-3.11：WW/WL + 缩放 + 平移，Shift+R / 工具栏按钮） */
-  const resetAllViews = useCallback(() => {
-    apiRef.current?.resetView();
-  }, []);
-
-  // 全局快捷键（FR-11 子集）；文本输入框聚焦时不触发
+  // ── 全局快捷键（FR-11 子集）；文本输入框聚焦时不触发 ──
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isTextInputTarget(event.target)) {
@@ -212,7 +281,7 @@ export default function App() {
         return;
       }
       event.preventDefault();
-      const api = apiRef.current;
+      const api = apisRef.current.get(activeViewportId) ?? null;
       switch (action.type) {
         case 'toggleInfo':
           setShowInfo((prev) => !prev);
@@ -233,7 +302,7 @@ export default function App() {
           api?.zoomStep(0.8);
           break;
         case 'layout':
-          // 布局快捷键在 feat(layout) 提交接入多视口后生效
+          switchLayout(action.cells);
           break;
         case 'slicePrev':
           api?.scrollSlice(-1);
@@ -242,7 +311,7 @@ export default function App() {
           api?.scrollSlice(1);
           break;
         case 'resetAll':
-          resetAllViews();
+          api?.resetView();
           break;
         case 'cancelTool':
           setPrimaryTool(ToolNames.windowLevel);
@@ -252,10 +321,9 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activateTool, resetAllViews, showToast]);
+  }, [activateTool, activeViewportId, showToast, switchLayout]);
 
-  const totalFiles = seriesList.reduce((sum, s) => sum + s.items.length, 0);
-  const hasStack = ui.sliceCount > 0;
+  const layoutConfig = LAYOUT_CONFIG[layout];
 
   return (
     <div className={`app${dragActive ? ' app--drag-active' : ''}`}>
@@ -275,19 +343,33 @@ export default function App() {
           className="file-input"
           aria-label="选择 DICOM 文件（可多选）"
           onChange={(event) => {
-            const files = event.target.files
-              ? Array.from(event.target.files)
-              : [];
+            const files = event.target.files ? Array.from(event.target.files) : [];
             void handleFiles(files);
             event.target.value = '';
           }}
         />
 
+        <div className="toolbar-group" role="group" aria-label="布局">
+          {(Object.keys(LAYOUT_CONFIG) as LayoutKey[]).map((key) => (
+            <button
+              type="button"
+              key={key}
+              className={`tool-button${layout === key ? ' tool-button--active' : ''}`}
+              title={`布局 ${key.replace('x', '×')}（快捷键 ${
+                { '1x1': '1', '1x2': '2', '2x2': '4' }[key]
+              }）`}
+              onClick={() => switchLayout(LAYOUT_CONFIG[key].cells)}
+            >
+              {key.replace('x', '×')}
+            </button>
+          ))}
+        </div>
+
         <div className="toolbar-group" role="group" aria-label="工具">
           <button
             type="button"
             className={`tool-button${primaryTool === ToolNames.windowLevel ? ' tool-button--active' : ''}`}
-            title="窗宽窗位（左键拖动）"
+            title="窗宽窗位（左键拖动，快捷键 W）"
             onClick={() => activateTool(ToolNames.windowLevel)}
           >
             窗宽窗位
@@ -295,7 +377,7 @@ export default function App() {
           <button
             type="button"
             className={`tool-button${primaryTool === ToolNames.zoom ? ' tool-button--active' : ''}`}
-            title="缩放（拖动 / Ctrl+滚轮）"
+            title="缩放（拖动 / Ctrl+滚轮，快捷键 Z）"
             onClick={() => activateTool(ToolNames.zoom)}
           >
             缩放
@@ -303,7 +385,7 @@ export default function App() {
           <button
             type="button"
             className={`tool-button${primaryTool === ToolNames.pan ? ' tool-button--active' : ''}`}
-            title="平移（中键拖动）"
+            title="平移（中键拖动，快捷键 P）"
             onClick={() => activateTool(ToolNames.pan)}
           >
             平移
@@ -372,10 +454,7 @@ export default function App() {
               type="button"
               className="tool-button"
               title="恢复默认窗宽窗位"
-              onClick={() =>
-                defaultWwWl !== undefined &&
-                apiRef.current?.applyWwWl(defaultWwWl.ww, defaultWwWl.wl)
-              }
+              onClick={() => activeApi?.resetWindowLevel()}
             >
               重置窗宽窗位
             </button>
@@ -388,7 +467,7 @@ export default function App() {
               type="button"
               className="tool-button"
               title="放大（+）"
-              onClick={() => apiRef.current?.zoomStep(1.25)}
+              onClick={() => activeApi?.zoomStep(1.25)}
             >
               ＋
             </button>
@@ -396,7 +475,7 @@ export default function App() {
               type="button"
               className="tool-button"
               title="缩小（−）"
-              onClick={() => apiRef.current?.zoomStep(0.8)}
+              onClick={() => activeApi?.zoomStep(0.8)}
             >
               －
             </button>
@@ -404,7 +483,7 @@ export default function App() {
               type="button"
               className="tool-button"
               title="1:1 原始像素显示"
-              onClick={() => apiRef.current?.oneToOne()}
+              onClick={() => activeApi?.oneToOne()}
             >
               1:1
             </button>
@@ -412,15 +491,15 @@ export default function App() {
               type="button"
               className="tool-button"
               title="适应窗口（F / 双击视口）"
-              onClick={() => apiRef.current?.fitToWindow()}
+              onClick={() => activeApi?.fitToWindow()}
             >
               适应窗口
             </button>
             <button
               type="button"
               className="tool-button"
-              title="全局重置：窗宽窗位+缩放+平移（Shift+R）"
-              onClick={resetAllViews}
+              title="重置视图：窗宽窗位+缩放+平移（Shift+R）"
+              onClick={() => activeApi?.resetView()}
             >
               重置视图
             </button>
@@ -432,20 +511,20 @@ export default function App() {
             <button
               type="button"
               className="tool-button"
-              disabled={ui.sliceIndex <= 0}
-              onClick={() => scrollSlice(-1)}
+              disabled={activeUi.sliceIndex <= 0}
+              onClick={() => activeApi?.scrollSlice(-1)}
               title="上一帧（PageUp / ←）"
             >
               ◀
             </button>
             <span className="slice-counter">
-              第 {ui.sliceIndex + 1} / {ui.sliceCount} 层
+              第 {activeUi.sliceIndex + 1} / {activeUi.sliceCount} 层
             </span>
             <button
               type="button"
               className="tool-button"
-              disabled={ui.sliceIndex >= ui.sliceCount - 1}
-              onClick={() => scrollSlice(1)}
+              disabled={activeUi.sliceIndex >= activeUi.sliceCount - 1}
+              onClick={() => activeApi?.scrollSlice(1)}
               title="下一帧（PageDown / →）"
             >
               ▶
@@ -463,7 +542,7 @@ export default function App() {
         </button>
 
         <span className="toolbar-hint">
-          多选/拖拽打开 · 滚轮翻页 · Ctrl+滚轮缩放 · 中键平移
+          多选/拖拽打开 · 滚轮翻页 · Ctrl+滚轮缩放 · 中键平移 · 点击序列载入激活视口
         </span>
       </header>
 
@@ -495,16 +574,17 @@ export default function App() {
                 type="button"
                 key={series.seriesUid}
                 className={`series-item${
-                  series.seriesUid === activeSeriesUid ? ' series-item--active' : ''
+                  series.seriesUid === assignments[activeViewportId]
+                    ? ' series-item--active'
+                    : ''
                 }`}
-                onClick={() => setActiveSeriesUid(series.seriesUid)}
+                onClick={() => loadSeriesToViewport(series.seriesUid)}
+                title="点击加载到当前激活视口"
               >
                 <span className="series-item-modality">{series.modality}</span>
                 <span className="series-item-label">
                   序列 {index + 1}
-                  {series.description !== undefined
-                    ? ` · ${series.description}`
-                    : ''}
+                  {series.description !== undefined ? ` · ${series.description}` : ''}
                 </span>
                 <span className="series-item-count">{series.items.length} 层</span>
               </button>
@@ -512,20 +592,32 @@ export default function App() {
           </aside>
         )}
 
-        <div className="viewport-area">
-          {(activeStack !== null || loadState.status === 'loading') && (
-            <>
-              <DicomViewport
-                items={activeStack?.items ?? []}
-                defaultWwWl={defaultWwWl}
-                showInfo={showInfo}
-                onApiReady={(api) => {
-                  apiRef.current = api;
-                }}
-                onUiChange={setUi}
-              />
-            </>
-          )}
+        <div className="viewer-grid-wrap">
+          <div
+            className="viewer-grid"
+            style={{
+              gridTemplateColumns: `repeat(${layoutConfig.columns}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${Math.ceil(layoutConfig.cells / layoutConfig.columns)}, minmax(0, 1fr))`,
+            }}
+          >
+            {ALL_VIEWPORT_IDS.slice(0, layoutConfig.cells).map((id) => {
+              const stack = stackByUid.get(assignments[id] ?? '') ?? null;
+              return (
+                <ViewerCell
+                  key={id}
+                  viewportId={id}
+                  items={stack?.items ?? []}
+                  defaultWwWl={getDefaultWwWl(stack)}
+                  showInfo={showInfo}
+                  isActive={id === activeViewportId}
+                  onActivate={setActiveViewportId}
+                  registerApi={registerApi}
+                  onUiChange={handleUiChange}
+                />
+              );
+            })}
+          </div>
+
           {loadState.status === 'loading' && (
             <div className="empty-hint">正在解析 {loadState.count} 个文件…</div>
           )}
@@ -549,7 +641,7 @@ export default function App() {
 
       <footer className="statusbar">
         {activeStack !== null
-          ? `${STACK_VIEWPORT_ID} · 共 ${totalFiles} 个实例 · ${activeStack.modality}`
+          ? `${activeViewportId} · ${activeStack.modality} · ${activeStack.items.length} 层 · 全部 ${totalInstances} 个实例`
           : '未加载数据'}
         {failures.length > 0 ? ` · ${failures.length} 个失败` : ''}
       </footer>

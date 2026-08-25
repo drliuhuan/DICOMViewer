@@ -32,7 +32,7 @@ import type { StackItem } from '../series/buildStacks';
 import { InfoOverlay } from '../../ui/components/InfoOverlay';
 
 const RENDERING_ENGINE_ID = 'dicom-viewer-m1-engine';
-export const STACK_VIEWPORT_ID = 'dicom-viewer-vp-0';
+
 
 /** 缩放下限（parallelScale 最小值，世界 mm），防止过度放大后除零/翻转 */
 const MIN_PARALLEL_SCALE = 1e-3;
@@ -67,6 +67,8 @@ export interface ViewportApi {
 }
 
 interface DicomViewportProps {
+  /** 本视口在共享渲染引擎中的唯一 id（如 vp-0） */
+  viewportId: string;
   /** 待显示堆栈条目（imageId + 元数据）；空数组表示空态 */
   items: StackItem[];
   defaultWwWl?: { ww: number; wl: number };
@@ -97,6 +99,7 @@ function voiToWwWl(range: Types.VOIRange | undefined): { ww: number; wl: number 
 }
 
 export function DicomViewport({
+  viewportId,
   items,
   defaultWwWl,
   showInfo,
@@ -149,15 +152,15 @@ export function DicomViewport({
       }
       const renderingEngine = getSharedRenderingEngine();
       renderingEngine.enableElement({
-        viewportId: STACK_VIEWPORT_ID,
+        viewportId,
         element,
         type: Enums.ViewportType.STACK,
         defaultOptions: { background: [0, 0, 0] },
       });
       const viewport =
-        renderingEngine.getViewport<Types.IStackViewport>(STACK_VIEWPORT_ID);
+        renderingEngine.getViewport<Types.IStackViewport>(viewportId);
       viewportRef.current = viewport;
-      toolGroup = createBoundToolGroup(RENDERING_ENGINE_ID, STACK_VIEWPORT_ID);
+      toolGroup = createBoundToolGroup(RENDERING_ENGINE_ID, viewportId);
 
       onApiReady?.({
         scrollSlice: (delta) => {
@@ -253,10 +256,11 @@ export function DicomViewport({
       if (toolGroup) {
         destroyBoundToolGroup(toolGroup);
       }
-      getSharedRenderingEngine().disableElement(STACK_VIEWPORT_ID);
+      getSharedRenderingEngine().disableElement(viewportId);
     };
+    // onApiReady 由父组件以 useCallback 稳定提供，此处仅依赖 viewportId
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [viewportId]);
 
   // 堆栈变化时加载并渲染；应用默认 WW/WL；同步层数状态
   useEffect(() => {
@@ -318,7 +322,7 @@ export function DicomViewport({
     };
     const onVoiModified = (event: Event) => {
       const detail = (event as CustomEvent<Types.EventTypes.VoiModifiedEventDetail>).detail;
-      if (detail.viewportId !== STACK_VIEWPORT_ID) {
+      if (detail.viewportId !== viewportId) {
         return;
       }
       publishUi(voiToWwWl(detail.range));
@@ -347,7 +351,7 @@ export function DicomViewport({
       element.removeEventListener(Enums.Events.CAMERA_MODIFIED, syncZoom);
       element.removeEventListener('dblclick', onDoubleClick);
     };
-  }, [publishUi]);
+  }, [publishUi, viewportId]);
 
   // 像素探针（FR-4.5）：光标 → 图像索引 → 原始像素 → Modality LUT
   useEffect(() => {
