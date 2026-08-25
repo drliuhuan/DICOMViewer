@@ -7,8 +7,9 @@
  * - ZoomTool         Ctrl+滚轮 以光标为中心缩放；亦可作为左键主工具激活
  * - StackScrollTool  滚轮翻页（无修饰键）；作为左键主工具激活时拖动翻层
  *
- * 四个工具常驻 Active，各自持有互不冲突的绑定组合；
- * 切换「主工具」只是把 Primary 按钮重新分配给目标工具。
+ * 切换「主工具」= 把 Primary 按钮分配给目标工具，其余工具退出 Primary：
+ * 主工具 Active（Primary + 常驻绑定），其余三个仅保留各自互不冲突的
+ * 常驻绑定（中键平移/Ctrl+滚轮缩放/滚轮翻页），见 syncToolBindings。
  *
  * 测量类工具（Length/Angle/RectangleROI/EllipticalROI/Probe）仅注册占位：
  * 激活入口由 UI 层拦截并提示「M3 提供」，避免快捷键体系返工。
@@ -134,7 +135,20 @@ export function createBoundToolGroup(
 }
 
 /**
- * 将 Primary 鼠标按钮分配给指定主工具，并同步全部四个常驻工具的绑定。
+ * 将 Primary 鼠标按钮分配给指定主工具，其余主工具退出 Primary 绑定。
+ *
+ * Cornerstone3D 的 setToolActive 会把新 bindings 与旧 bindings **合并**
+ * （ToolGroup.js: [...prevBindings, ...newBindings] 去重），传 bindings:[]
+ * 并不能清掉历史 Primary —— 这正是「切换只换高亮不换行为」缺陷的根因：
+ * WindowLevel 永远残留 Primary，事件派发（getActiveToolForMouseEvent）
+ * 按 addTool 顺序遍历 toolOptions，先命中 WindowLevel → 永远窗宽窗位。
+ *
+ * 因此这里统一采用「先 setToolPassive 剥离 Primary，再按目标状态重建」：
+ * - setToolPassive 默认移除 Primary 绑定并保留其余绑定；
+ *   若仍有剩余绑定则保持 Active（中键平移/Ctrl+滚轮缩放/滚轮翻页因此不丢）；
+ * - 随后按需重建：主工具拿 Primary + 各自常驻绑定；非主工具仅常驻绑定。
+ *   （对从未激活过的工具，passive 后无任何绑定，必须显式重建常驻绑定。）
+ *
  * @param primary 目标主工具名；传 null 视为恢复默认（窗宽窗位）
  */
 export function syncToolBindings(
@@ -143,14 +157,17 @@ export function syncToolBindings(
 ): void {
   const activeTool = primary ?? ToolNames.windowLevel;
   for (const toolName of PRIMARY_DRAG_TOOLS) {
-    const bindings = [
-      ...(toolName === activeTool
-        ? [{ mouseButton: MouseBindings.Primary }]
-        : []),
-      ...(PERSISTENT_BINDINGS[toolName] ?? []),
-    ];
-    // 全部保持 Active：未持绑定的工具不会响应任何输入
-    toolGroup.setToolActive(toolName, { bindings });
+    // 剥离历史 Primary 绑定（避免 merge 残留），保留常驻绑定
+    toolGroup.setToolPassive(toolName);
+    const bindings =
+      toolName === activeTool
+        ? [{ mouseButton: MouseBindings.Primary }, ...(PERSISTENT_BINDINGS[toolName] ?? [])]
+        : [...(PERSISTENT_BINDINGS[toolName] ?? [])];
+    if (bindings.length > 0) {
+      // 与 passive 保留下的常驻绑定合并去重后即为目标绑定集合
+      toolGroup.setToolActive(toolName, { bindings });
+    }
+    // windowLevel 无常驻绑定且非主工具时停在 Passive：不再响应任何鼠标输入
   }
 }
 
