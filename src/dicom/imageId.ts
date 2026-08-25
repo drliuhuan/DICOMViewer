@@ -68,20 +68,171 @@ export function getBufferForImageId(imageId: string): ArrayBuffer {
 /** 已完成 NATURALIZED 元数据登记的 base imageId 集合，避免逐帧重复解析 */
 const registeredBaseImageIds = new Set<string>();
 
-async function loadDcmFileImage(imageId: string): Promise<Types.IImage> {
-  const [{ utilities }, { loadImageFromNaturalizedMetadata }] = await Promise.all([
-    import('@cornerstonejs/metadata'),
-    import('@cornerstonejs/dicom-image-loader/wadouri'),
-  ]);
-  // 预置 NATURALIZED 元数据（从内存 ArrayBuffer 解析），使后续管线无需任何 IO。
-  // 多帧 imageId 的元数据统一挂在剥离 frame 参数的 base imageId 上，
-  // 逐帧像素由 dicom-image-loader/metadata 的 frame 查询参数管线取回。
+/**
+ * NATURALIZED 元数据中像素数据可能出现的键名，
+ * 与 @cornerstonejs/metadata compressedFrameData 的查找顺序一致。
+ */
+const PIXEL_DATA_KEYS = [
+  'PixelData',
+  'FramePixelData',
+  'FloatPixelData',
+  '7FE00010',
+  '7fe00010',
+  '7FE00008',
+  '7fe00008',
+] as const;
+
+function findPixelDataEntry(
+  natural: Record<string, unknown>,
+): { key: string; frames: unknown[] } | undefined {
+  for (const key of PIXEL_DATA_KEYS) {
+    const value = natural[key];
+    if (Array.isArray(value) && value.length > 0) {
+      return { key, frames: value };
+    }
+  }
+  return undefined;
+}
+
+function toUint8View(data: ArrayBuffer | ArrayBufferView): Uint8Array {
+  if (data instanceof ArrayBuffer) {
+    return new Uint8Array(data);
+  }
+  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+}
+
+function isBytes(value: unknown): value is ArrayBuffer | ArrayBufferView {
+  return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
+}
+
+/** 深度优先收集任意嵌套数组中的字节缓冲片段 */
+function collectByteViews(value: unknown, out: Uint8Array[]): void {
+  if (isBytes(value)) {
+    out.push(toUint8View(value));
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectByteViews(item, out);
+    }
+  }
+}
+
+/**
+ * 取出像素数据条目承载的连续字节。
+ * dcmjs 可能以单缓冲或「逐帧片段数组」（帧内再分片的 `Array<ArrayBuffer>`）交付，
+ * 单一片段直接返回视图，多片段则拼接为连续缓冲。
+ */
+function extractContiguousBytes(value: unknown): Uint8Array | undefined {
+  const parts: Uint8Array[] = [];
+  collectByteViews(value, parts);
+  if (parts.length === 0) {
+    return undefined;
+  }
+  if (parts.length === 1) {
+    return parts[0];
+  }
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    joined.set(part, offset);
+    offset += part.byteLength;
+  }
+  return joined;
+}
+
+function toIntCount(value: unknown): number {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) ? n : Number.NaN;
+}
+
+/**
+ * 将 NATURALIZED 元数据中的单缓冲 PixelData 原地拆分为逐帧缓冲。
+ *
+ * 背景（M1 验收缺陷）：多帧文件的 COMPRESSED_FRAME_DATA 查询
+ * （`metaData.getTyped(COMPRESSED_FRAME_DATA, imageId, { frameIndex })`）
+ * 仅当 `PixelData` 数组长度等于 NumberOfFrames 时才能按帧取回；
+ * 上游 dcmjs 解析器对部分文件不拆帧（PixelData 为长度 1 的单条目数组，
+ * 条目为整份像素缓冲或其片段数组），且库内单条目兜底切分只对
+ * FloatPixelData（paramap）类型生效，
+ * 导致 frame≥1 全部报 "no pixel data in NATURALIZED"。
+ *
+ * @returns 是否发生了原地修改
+ */
+export function splitNaturalizedPixelDataIntoFrames(natural: Record<string, unknown>): boolean {
+  const numberOfFrames = toIntCount(natural['NumberOfFrames']);
+  if (!Number.isFinite(numberOfFrames) || numberOfFrames <= 1) {
+    return false;
+  }
+  const entry = findPixelDataEntry(natural);
+  if (!entry || entry.frames.length !== 1) {
+    return false;
+  }
+  // 上游未拆帧时唯一条目可能是单缓冲，也可能是嵌套的片段数组（dcmjs 帧交付格式）
+  const whole = extractContiguousBytes(entry.frames[0]);
+  if (!whole || whole.byteLength === 0) {
+    return false;
+  }
+
+  const rows = toIntCount(natural['Rows']);
+  const columns = toIntCount(natural['Columns']);
+  const samplesPerPixel = toIntCount(natural['SamplesPerPixel'] ?? 1);
+  const bitsAllocated = toIntCount(natural['BitsAllocated']);
+  let frameBytes = rows * columns * samplesPerPixel * Math.ceil(bitsAllocated / 8);
+  if (
+    !Number.isFinite(frameBytes) ||
+    frameBytes <= 0 ||
+    whole.byteLength !== frameBytes * numberOfFrames
+  ) {
+    // 元数据推算的帧大小与实际不符时，退化为整除均分；无法整除则放弃
+    if (whole.byteLength % numberOfFrames !== 0) {
+      return false;
+    }
+    frameBytes = whole.byteLength / numberOfFrames;
+  }
+
+  const perFrame: Uint8Array[] = [];
+  for (let index = 0; index < numberOfFrames; index++) {
+    perFrame.push(whole.subarray(index * frameBytes, (index + 1) * frameBytes));
+  }
+  natural[entry.key] = perFrame;
+  return true;
+}
+
+/**
+ * 确保 imageId（可含 ?frame=N 查询参数）对应的 Part-10 缓冲已完成
+ * NATURALIZED 元数据挂载，且多帧像素数据已按帧拆分到位。
+ *
+ * 元数据统一挂在剥离 frame 参数的 base imageId 上（库内 BASE_IMAGE_ID
+ * 过滤器会自动剥离查询串）；逐帧像素随后由 COMPRESSED_FRAME_DATA
+ * 管线按 frameIndex 取回。
+ */
+export async function ensureDcmFileMetadata(imageId: string): Promise<void> {
+  const { utilities } = await import('@cornerstonejs/metadata');
   const queryIndex = imageId.indexOf('?');
   const baseImageId = queryIndex === -1 ? imageId : imageId.slice(0, queryIndex);
-  if (!registeredBaseImageIds.has(baseImageId)) {
-    await utilities.addDicomPart10Instance(baseImageId, getBufferForImageId(baseImageId));
-    registeredBaseImageIds.add(baseImageId);
+  if (registeredBaseImageIds.has(baseImageId)) {
+    return;
   }
+  // addDicomPart10Instance 的返回类型标注为 Promise<never>（上游标注缺陷），
+  // 实际 resolve 值是解析后的 NATURALIZED 字典对象。
+  const naturalized = (await utilities.addDicomPart10Instance(
+    baseImageId,
+    getBufferForImageId(baseImageId),
+  )) as unknown;
+  if (typeof naturalized === 'object' && naturalized !== null) {
+    // 元数据缓存持有同一对象引用，原地拆帧即对全部查询方生效
+    splitNaturalizedPixelDataIntoFrames(naturalized as Record<string, unknown>);
+  }
+  registeredBaseImageIds.add(baseImageId);
+}
+
+async function loadDcmFileImage(imageId: string): Promise<Types.IImage> {
+  const [, { loadImageFromNaturalizedMetadata }] = await Promise.all([
+    ensureDcmFileMetadata(imageId),
+    import('@cornerstonejs/dicom-image-loader/wadouri'),
+  ]);
   const loadObject = loadImageFromNaturalizedMetadata(imageId);
   return loadObject.promise;
 }

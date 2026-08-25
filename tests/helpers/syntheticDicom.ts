@@ -7,6 +7,8 @@ export interface SyntheticDicomOptions {
   modality?: string;
   rows?: number;
   columns?: number;
+  /** 帧数；缺省/1 为单帧文件。>1 时写入 NumberOfFrames 并逐帧编码像素 */
+  numberOfFrames?: number;
   seriesInstanceUid?: string;
   instanceNumber?: number;
   sliceLocation?: number;
@@ -17,9 +19,7 @@ export interface SyntheticDicomOptions {
 }
 
 /** 需要长格式长度字段（保留字节 + uint32 长度）的 VR */
-const LONG_FORM_VRS = new Set([
-  'OB', 'OD', 'OF', 'OL', 'OV', 'OW', 'SQ', 'UC', 'UR', 'UT', 'UN',
-]);
+const LONG_FORM_VRS = new Set(['OB', 'OD', 'OF', 'OL', 'OV', 'OW', 'SQ', 'UC', 'UR', 'UT', 'UN']);
 
 function padToEven(value: string, padByte: number): Uint8Array {
   // 先按 UTF-8 编码，再对字节长度补齐（DICOM 值长度必须为偶数）
@@ -40,12 +40,15 @@ function uint16Bytes(...values: number[]): Uint8Array {
   return out;
 }
 
+function uint32Bytes(value: number): Uint8Array {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setUint32(0, value, true);
+  return out;
+}
+
 /** 编码 IS/DS 数值字符串（含多值反斜杠分隔） */
 function numberStringBytes(values: number[]): Uint8Array {
-  return padToEven(
-    values.map((v) => String(v)).join('\\'),
-    0x20,
-  );
+  return padToEven(values.map((v) => String(v)).join('\\'), 0x20);
 }
 
 function appendElement(
@@ -76,11 +79,15 @@ function appendElement(
 
 /**
  * 构建最小合法的 CT Image Storage Part-10 文件：
- * 128 字节 preamble + DICM + 元组（传输语法）+ 数据集 + 像素数据。
+ * 128 字节 preamble + DICM + 文件元组（含组长度，dcmjs AsyncDicomReader 必需）
+ * + 数据集 + 像素数据。
+ *
+ * 多帧（numberOfFrames > 1）时写入 (0028,0008) NumberOfFrames，
+ * 且第 f 帧像素值整体偏移 `f × 帧像素数`（单帧保持原有渐变），便于断言帧内容差异。
  */
 export function buildSyntheticDicom(options: SyntheticDicomOptions = {}): ArrayBuffer {
-  const { patientName = 'M0^SMOKE^TEST', modality = 'CT', rows = 16, columns = 16 } =
-    options;
+  const { patientName = 'M0^SMOKE^TEST', modality = 'CT', rows = 16, columns = 16 } = options;
+  const numberOfFrames = Math.max(1, options.numberOfFrames ?? 1);
 
   const bytes: number[] = [];
   for (let i = 0; i < 128; i++) {
@@ -90,8 +97,11 @@ export function buildSyntheticDicom(options: SyntheticDicomOptions = {}): ArrayB
     bytes.push(ch.charCodeAt(0));
   }
 
-  // ── File Meta Group (0002) ──
-  appendElement(bytes, 0x0002, 0x0010, 'UI', padToEven('1.2.840.10008.1.2.1', 0)); // Explicit VR Little Endian
+  // ── File Meta Group (0002)：先编码到独立缓冲以计算组长度 ──
+  const metaBytes: number[] = [];
+  appendElement(metaBytes, 0x0002, 0x0010, 'UI', padToEven('1.2.840.10008.1.2.1', 0)); // Explicit VR Little Endian
+  appendElement(bytes, 0x0002, 0x0000, 'UL', uint32Bytes(metaBytes.length)); // FileMetaInformationGroupLength
+  bytes.push(...metaBytes);
 
   // ── Dataset（按 Tag 升序）──
   appendElement(bytes, 0x0008, 0x0016, 'UI', padToEven('1.2.840.10008.5.1.4.1.1.2', 0)); // SOP Class UID (CT)
@@ -113,13 +123,7 @@ export function buildSyntheticDicom(options: SyntheticDicomOptions = {}): ArrayB
     appendElement(bytes, 0x0020, 0x1041, 'DS', numberStringBytes([options.sliceLocation]));
   }
   if (options.imageOrientationPatient !== undefined) {
-    appendElement(
-      bytes,
-      0x0020,
-      0x0037,
-      'DS',
-      numberStringBytes(options.imageOrientationPatient),
-    );
+    appendElement(bytes, 0x0020, 0x0037, 'DS', numberStringBytes(options.imageOrientationPatient));
   }
   if (options.windowWidth !== undefined) {
     appendElement(bytes, 0x0028, 0x1051, 'DS', numberStringBytes([options.windowWidth]));
@@ -129,6 +133,9 @@ export function buildSyntheticDicom(options: SyntheticDicomOptions = {}): ArrayB
   }
   appendElement(bytes, 0x0010, 0x0010, 'PN', padToEven(patientName, 0x20)); // Patient Name
   appendElement(bytes, 0x0028, 0x0002, 'US', uint16Bytes(1)); // Samples per Pixel
+  if (numberOfFrames > 1) {
+    appendElement(bytes, 0x0028, 0x0008, 'IS', numberStringBytes([numberOfFrames])); // NumberOfFrames
+  }
   if (options.pixelSpacing !== undefined) {
     appendElement(bytes, 0x0028, 0x0030, 'DS', numberStringBytes([...options.pixelSpacing]));
   }
@@ -137,12 +144,18 @@ export function buildSyntheticDicom(options: SyntheticDicomOptions = {}): ArrayB
   appendElement(bytes, 0x0028, 0x0100, 'US', uint16Bytes(16)); // Bits Allocated
   appendElement(bytes, 0x0028, 0x0103, 'US', uint16Bytes(0)); // Pixel Representation（无符号）
 
-  // ── Pixel Data (7FE0,0010)：渐变灰度图，rows×columns×2 字节 ──
+  // ── Pixel Data (7FE0,0010)：渐变灰度图，rows×columns×2 字节 × 帧数 ──
+  // 第 f 帧（0 起始）像素值 = f × (rows×columns) + i，保证各帧灰度可区分
   const pixelCount = rows * columns;
-  const pixelData = new Uint8Array(pixelCount * 2);
-  for (let i = 0; i < pixelCount; i++) {
-    pixelData[2 * i] = i & 0xff;
-    pixelData[2 * i + 1] = (i >> 8) & 0xff;
+  const pixelData = new Uint8Array(pixelCount * 2 * numberOfFrames);
+  for (let frameIndex = 0; frameIndex < numberOfFrames; frameIndex++) {
+    const frameOffset = frameIndex * pixelCount;
+    for (let i = 0; i < pixelCount; i++) {
+      const value = numberOfFrames > 1 ? frameOffset + i : i;
+      const outOffset = (frameOffset + i) * 2;
+      pixelData[outOffset] = value & 0xff;
+      pixelData[outOffset + 1] = (value >> 8) & 0xff;
+    }
   }
   appendElement(bytes, 0x7fe0, 0x0010, 'OW', pixelData);
 
