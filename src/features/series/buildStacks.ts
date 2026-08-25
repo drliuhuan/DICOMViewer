@@ -38,25 +38,104 @@ export interface SeriesStack {
   studyDescription: string | undefined;
 }
 
-/** FR-2.3 最小排序比较器：InstanceNumber → SliceLocation → 文件名 */
+/** 切片法向量：ImageOrientationPatient 行/列余弦的叉积（仅用于投影比较，无需归一化） */
+export function sliceNormal(
+  summary: DicomInstanceSummary,
+): [number, number, number] | undefined {
+  const iop = summary.imageOrientationPatient;
+  if (!iop) {
+    return undefined;
+  }
+  const row = [iop[0], iop[1], iop[2]];
+  const column = [iop[3], iop[4], iop[5]];
+  return [
+    row[1]! * column[2]! - row[2]! * column[1]!,
+    row[2]! * column[0]! - row[0]! * column[2]!,
+    row[0]! * column[1]! - row[1]! * column[0]!,
+  ];
+}
+
+/** 投影相等判定阈值（mm 级浮点容差） */
+const PROJECTION_EPSILON = 1e-4;
+
+/**
+ * FR-2.3 第三级排序键：ImagePositionPatient 沿切片法向量的投影。
+ * 无 IOP 时退回 z 分量（常见轴位数据的等价近似）；缺失 IPP 返回 undefined。
+ */
+export function sliceProjection(summary: DicomInstanceSummary): number | undefined {
+  const position = summary.imagePositionPatient;
+  if (!position) {
+    return undefined;
+  }
+  const normal = sliceNormal(summary);
+  if (!normal) {
+    return position[2];
+  }
+  return (
+    position[0] * normal[0] + position[1] * normal[1] + position[2] * normal[2]
+  );
+}
+
+/**
+ * FR-2.3 完整排序链：InstanceNumber → SliceLocation → IPP 法向量投影 → 文件名。
+ * 缺失 InstanceNumber 排最后；SliceLocation 仅在双方都存在时参与；
+ * 投影差在浮点容差内视为相等，交由文件名稳定收尾。
+ */
 export function compareInstances(a: OpenedDicomFile, b: OpenedDicomFile): number {
   const instanceA = a.summary.instanceNumber ?? Number.POSITIVE_INFINITY;
   const instanceB = b.summary.instanceNumber ?? Number.POSITIVE_INFINITY;
   if (instanceA !== instanceB) {
     return instanceA - instanceB;
   }
-  const sliceA = a.summary.sliceLocation ?? 0;
-  const sliceB = b.summary.sliceLocation ?? 0;
-  if (sliceA !== sliceB) {
+  const sliceA = a.summary.sliceLocation;
+  const sliceB = b.summary.sliceLocation;
+  if (sliceA !== undefined && sliceB !== undefined && sliceA !== sliceB) {
     return sliceA - sliceB;
+  }
+  const projectionA = sliceProjection(a.summary);
+  const projectionB = sliceProjection(b.summary);
+  if (
+    projectionA !== undefined &&
+    projectionB !== undefined &&
+    Math.abs(projectionA - projectionB) > PROJECTION_EPSILON
+  ) {
+    return projectionA - projectionB;
   }
   return a.fileName.localeCompare(b.fileName, 'en');
 }
 
+/** 多帧实例展开时的帧序：优先按逐帧位置投影升序，否则自然帧序 */
+function orderedFrameNumbers(summary: DicomInstanceSummary): number[] {
+  const frames = Math.max(1, summary.numberOfFrames);
+  const natural = Array.from({ length: frames }, (_, index) => index + 1);
+  const positions = summary.perFrameImagePositions;
+  if (frames <= 1 || !positions || positions.length !== frames) {
+    return natural;
+  }
+  const projections = positions.map((position) =>
+    sliceProjection({
+      ...summary,
+      imagePositionPatient: position,
+    }),
+  );
+  if (projections.some((value) => value === undefined)) {
+    return natural;
+  }
+  const sortable = natural.map((frameNumber, index) => ({
+    frameNumber,
+    projection: projections[index] as number,
+  }));
+  // 稳定排序（相同投影保持自然帧序）
+  sortable.sort((a, b) => a.projection - b.projection);
+  return sortable.map((entry) => entry.frameNumber);
+}
+
 function toStackItems(file: OpenedDicomFile): StackItem[] {
   const frames = Math.max(1, file.summary.numberOfFrames);
+  const frameOrder =
+    frames > 1 ? orderedFrameNumbers(file.summary) : [1];
   const items: StackItem[] = [];
-  for (let frameNumber = 1; frameNumber <= frames; frameNumber++) {
+  for (const frameNumber of frameOrder) {
     items.push({
       imageId:
         frames > 1 ? withFrameNumber(file.baseImageId, frameNumber) : file.baseImageId,
