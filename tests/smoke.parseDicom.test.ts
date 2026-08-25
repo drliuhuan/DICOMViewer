@@ -47,6 +47,28 @@ describe('parseDicomArrayBuffer：合成 DICOM 冒烟', () => {
     expect(summary.columns).toBe(24);
   });
 
+  it('M1 新增字段：排序/方向/窗宽窗位标签正确提取', () => {
+    const dataSet = parseDicomArrayBuffer(
+      buildSyntheticDicom({
+        seriesInstanceUid: '1.2.840.999.1',
+        instanceNumber: 7,
+        sliceLocation: -12.5,
+        pixelSpacing: [0.5, 0.5],
+        imageOrientationPatient: [1, 0, 0, 0, 1, 0],
+        windowWidth: 400,
+        windowCenter: 40,
+      }),
+    );
+    const summary = extractInstanceSummary(dataSet);
+    expect(summary.seriesInstanceUid).toBe('1.2.840.999.1');
+    expect(summary.instanceNumber).toBe(7);
+    expect(summary.sliceLocation).toBe(-12.5);
+    expect(summary.pixelSpacing).toEqual([0.5, 0.5]);
+    expect(summary.imageOrientationPatient).toEqual([1, 0, 0, 0, 1, 0]);
+    expect(summary.windowWidth).toBe(400);
+    expect(summary.windowCenter).toBe(40);
+  });
+
   it('非 DICOM 文本文件抛出 NotDicomError', () => {
     const text = 'plain text file, definitely not a dicom file. '.repeat(4);
     const buffer = new TextEncoder().encode(text).buffer as ArrayBuffer;
@@ -68,6 +90,13 @@ describe('dcm-file:// imageId 注册表', () => {
 
     expect(imageId.startsWith(`${DCM_FILE_SCHEME}://`)).toBe(true);
     expect(getBufferForImageId(imageId)).toBe(buffer);
+  });
+
+  it('带 ?frame=N 查询参数的多帧 imageId 仍能取回原始 buffer', () => {
+    const buffer = buildSyntheticDicom();
+    const baseImageId = createDcmFileImageId(buffer);
+    const frameImageId = `${baseImageId}?frame=3`;
+    expect(getBufferForImageId(frameImageId)).toBe(buffer);
   });
 
   it('未登记或非本 scheme 的 imageId 取回时抛错', () => {

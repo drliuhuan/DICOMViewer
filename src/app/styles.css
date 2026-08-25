@@ -101,12 +101,99 @@ body {
   cursor: pointer;
 }
 
+/* ── 警告条（部分文件解析失败） ────────── */
+.warn-banner {
+  margin: 8px 12px 0;
+  padding: 8px 14px;
+  border: 1px solid #b58a2b;
+  border-radius: 8px;
+  background: #33290f;
+  color: #ffe9b3;
+  font-size: 13px;
+}
+
+/* ── 工作区（序列面板 + 视口区）────────── */
+.workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  margin: 8px 12px 12px;
+  gap: 8px;
+}
+
+.series-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 230px;
+  flex-shrink: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow-y: auto;
+}
+
+.series-panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+
+.series-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.series-item:hover {
+  background: #232c36;
+}
+
+.series-item--active,
+.series-item--active:hover {
+  border-color: var(--accent);
+  background: rgba(58, 160, 255, 0.12);
+}
+
+.series-item-modality {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: #2d3947;
+  color: #bcd7f2;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.series-item-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.series-item-count {
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* ── 视口区 ─────────────────────────────── */
 .viewport-area {
   position: relative;
   flex: 1;
+  min-width: 0;
   min-height: 0;
-  margin: 8px 12px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;

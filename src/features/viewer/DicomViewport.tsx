@@ -1,32 +1,38 @@
 /**
- * M0 最小视口组件：Cornerstone3D StackViewport 挂载与图像显示。
- * 工具（WW/WL、缩放、平移等）在 M1 接入 @cornerstonejs/tools。
+ * M1 视口组件：Cornerstone3D StackViewport 挂载与图像堆栈显示。
+ * 工具（WW/WL、缩放、平移、翻页）在 feat(tools) 提交接入 @cornerstonejs/tools。
  */
 import { useEffect, useRef, useState } from 'react';
-import { Enums, RenderingEngine } from '@cornerstonejs/core';
+import { Enums, RenderingEngine, getRenderingEngine } from '@cornerstonejs/core';
 import type { Types } from '@cornerstonejs/core';
 
-const RENDERING_ENGINE_ID = 'dicom-viewer-m0-engine';
-const STACK_VIEWPORT_ID = 'dicom-viewer-m0-viewport';
+const RENDERING_ENGINE_ID = 'dicom-viewer-m1-engine';
+export const STACK_VIEWPORT_ID = 'dicom-viewer-vp-0';
 
 interface DicomViewportProps {
-  /** 待显示的 imageId；null 表示空态 */
-  imageId: string | null;
+  /** 待显示的 imageId 列表（堆栈）；空数组表示空态 */
+  imageIds: string[];
 }
 
-export function DicomViewport({ imageId }: DicomViewportProps) {
+/** 取应用级单例渲染引擎（生命周期 = 应用，视口随组件挂载/卸载启用/禁用） */
+function getSharedRenderingEngine(): RenderingEngine {
+  return (
+    getRenderingEngine(RENDERING_ENGINE_ID) ??
+    new RenderingEngine(RENDERING_ENGINE_ID)
+  );
+}
+
+export function DicomViewport({ imageIds }: DicomViewportProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const engineRef = useRef<RenderingEngine | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
 
-  // 创建 / 销毁渲染引擎（挂载期一次）
+  // 挂载期启用视口；卸载期禁用（引擎为应用级单例）
   useEffect(() => {
     const element = containerRef.current;
     if (!element) {
       return undefined;
     }
-    const renderingEngine = new RenderingEngine(RENDERING_ENGINE_ID);
-    engineRef.current = renderingEngine;
+    const renderingEngine = getSharedRenderingEngine();
     renderingEngine.enableElement({
       viewportId: STACK_VIEWPORT_ID,
       element,
@@ -34,27 +40,26 @@ export function DicomViewport({ imageId }: DicomViewportProps) {
       defaultOptions: { background: [0, 0, 0] },
     });
     return () => {
-      engineRef.current = null;
-      renderingEngine.destroy();
+      renderingEngine.disableElement(STACK_VIEWPORT_ID);
     };
   }, []);
 
-  // imageId 变化时加载并渲染
+  // 堆栈变化时加载并渲染
   useEffect(() => {
-    if (imageId === null) {
+    if (imageIds.length === 0) {
       setRenderError(null);
       return undefined;
     }
     let cancelled = false;
     void (async () => {
       try {
-        const engine = engineRef.current;
+        const engine = getRenderingEngine(RENDERING_ENGINE_ID);
         if (!engine) {
           throw new Error('渲染引擎尚未就绪');
         }
         const viewport =
           engine.getViewport<Types.IStackViewport>(STACK_VIEWPORT_ID);
-        await viewport.setStack([imageId]);
+        await viewport.setStack(imageIds);
         viewport.render();
         if (!cancelled) {
           setRenderError(null);
@@ -71,7 +76,7 @@ export function DicomViewport({ imageId }: DicomViewportProps) {
     return () => {
       cancelled = true;
     };
-  }, [imageId]);
+  }, [imageIds]);
 
   return (
     <div className="viewport-container">

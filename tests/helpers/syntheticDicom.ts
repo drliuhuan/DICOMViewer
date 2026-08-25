@@ -7,6 +7,13 @@ export interface SyntheticDicomOptions {
   modality?: string;
   rows?: number;
   columns?: number;
+  seriesInstanceUid?: string;
+  instanceNumber?: number;
+  sliceLocation?: number;
+  pixelSpacing?: [number, number];
+  imageOrientationPatient?: [number, number, number, number, number, number];
+  windowWidth?: number;
+  windowCenter?: number;
 }
 
 /** 需要长格式长度字段（保留字节 + uint32 长度）的 VR */
@@ -31,6 +38,14 @@ function uint16Bytes(...values: number[]): Uint8Array {
   const view = new DataView(out.buffer);
   values.forEach((v, i) => view.setUint16(i * 2, v, true));
   return out;
+}
+
+/** 编码 IS/DS 数值字符串（含多值反斜杠分隔） */
+function numberStringBytes(values: number[]): Uint8Array {
+  return padToEven(
+    values.map((v) => String(v)).join('\\'),
+    0x20,
+  );
 }
 
 function appendElement(
@@ -88,8 +103,35 @@ export function buildSyntheticDicom(options: SyntheticDicomOptions = {}): ArrayB
     padToEven('1.2.826.0.1.3680043.8.498.10002345987245', 0), // SOP Instance UID
   );
   appendElement(bytes, 0x0008, 0x0060, 'CS', padToEven(modality, 0x20)); // Modality
+  if (options.seriesInstanceUid !== undefined) {
+    appendElement(bytes, 0x0020, 0x000e, 'UI', padToEven(options.seriesInstanceUid, 0));
+  }
+  if (options.instanceNumber !== undefined) {
+    appendElement(bytes, 0x0020, 0x0013, 'IS', numberStringBytes([options.instanceNumber]));
+  }
+  if (options.sliceLocation !== undefined) {
+    appendElement(bytes, 0x0020, 0x1041, 'DS', numberStringBytes([options.sliceLocation]));
+  }
+  if (options.imageOrientationPatient !== undefined) {
+    appendElement(
+      bytes,
+      0x0020,
+      0x0037,
+      'DS',
+      numberStringBytes(options.imageOrientationPatient),
+    );
+  }
+  if (options.windowWidth !== undefined) {
+    appendElement(bytes, 0x0028, 0x1051, 'DS', numberStringBytes([options.windowWidth]));
+  }
+  if (options.windowCenter !== undefined) {
+    appendElement(bytes, 0x0028, 0x1050, 'DS', numberStringBytes([options.windowCenter]));
+  }
   appendElement(bytes, 0x0010, 0x0010, 'PN', padToEven(patientName, 0x20)); // Patient Name
   appendElement(bytes, 0x0028, 0x0002, 'US', uint16Bytes(1)); // Samples per Pixel
+  if (options.pixelSpacing !== undefined) {
+    appendElement(bytes, 0x0028, 0x0030, 'DS', numberStringBytes([...options.pixelSpacing]));
+  }
   appendElement(bytes, 0x0028, 0x0010, 'US', uint16Bytes(rows)); // Rows
   appendElement(bytes, 0x0028, 0x0011, 'US', uint16Bytes(columns)); // Columns
   appendElement(bytes, 0x0028, 0x0100, 'US', uint16Bytes(16)); // Bits Allocated

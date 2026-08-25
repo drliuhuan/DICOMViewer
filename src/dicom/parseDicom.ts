@@ -30,11 +30,26 @@ export function hasDicomPreamble(buffer: ArrayBufferLike): boolean {
   );
 }
 
-/** M0 阶段关心的实例级元数据摘要（FR-4 全量信息面板在后续里程碑实现） */
+/** 实例级元数据摘要（M1：FR-2.3 排序 + FR-3/FR-4 覆盖文字所需字段） */
 export interface DicomInstanceSummary {
   patientName: string;
   patientId: string | undefined;
+  patientSex: string | undefined;
+  patientAge: string | undefined;
   modality: string;
+  studyDate: string | undefined;
+  studyDescription: string | undefined;
+  institutionName: string | undefined;
+  seriesInstanceUid: string | undefined;
+  seriesNumber: number | undefined;
+  seriesDescription: string | undefined;
+  instanceNumber: number | undefined;
+  sliceLocation: number | undefined;
+  sliceThickness: number | undefined;
+  pixelSpacing: [number, number] | undefined;
+  imageOrientationPatient: [number, number, number, number, number, number] | undefined;
+  windowWidth: number | undefined;
+  windowCenter: number | undefined;
   rows: number;
   columns: number;
   bitsAllocated: number | undefined;
@@ -92,6 +107,36 @@ function safeUint16(dataSet: dicomParser.DataSet, tag: string): number | undefin
   }
 }
 
+/** 解析 IS/DS/US 等数值字符串 VR（取首个值） */
+function safeNumber(dataSet: dicomParser.DataSet, tag: string): number | undefined {
+  const raw = safeString(dataSet, tag);
+  if (raw === undefined) {
+    return undefined;
+  }
+  const first = raw.split('\\')[0]?.trim();
+  if (first === undefined || first === '') {
+    return undefined;
+  }
+  const value = Number(first);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/** 解析 DS 多值 VR（如 PixelSpacing / ImageOrientationPatient） */
+function safeNumberArray(
+  dataSet: dicomParser.DataSet,
+  tag: string,
+): number[] | undefined {
+  const raw = safeString(dataSet, tag);
+  if (raw === undefined) {
+    return undefined;
+  }
+  const values = raw
+    .split('\\')
+    .map((part) => Number(part.trim()))
+    .filter((value) => Number.isFinite(value));
+  return values.length > 0 ? values : undefined;
+}
+
 /**
  * 从已解析数据集中提取实例级元数据摘要。
  * 所有字段容错读取：单个 Tag 异常不影响整体。
@@ -101,10 +146,41 @@ export function extractInstanceSummary(
 ): DicomInstanceSummary {
   const numberOfFramesRaw = safeString(dataSet, 'x00280008'); // NumberOfFrames 为 IS VR
   const numberOfFrames = numberOfFramesRaw !== undefined ? Number(numberOfFramesRaw) : 1;
+  const pixelSpacing = safeNumberArray(dataSet, 'x00280030');
+  const iop = safeNumberArray(dataSet, 'x00200037');
+  const pixelSpacingTuple: [number, number] | undefined =
+    pixelSpacing !== undefined && pixelSpacing.length >= 2
+      ? [pixelSpacing[0] ?? 0, pixelSpacing[1] ?? 0]
+      : undefined;
   return {
     patientName: safeString(dataSet, 'x00100010') ?? '(无姓名)',
     patientId: safeString(dataSet, 'x00100020'),
+    patientSex: safeString(dataSet, 'x00100040'),
+    patientAge: safeString(dataSet, 'x00101010'),
     modality: safeString(dataSet, 'x00080060') ?? '?',
+    studyDate: safeString(dataSet, 'x00080020'),
+    studyDescription: safeString(dataSet, 'x00081030'),
+    institutionName: safeString(dataSet, 'x00080080'),
+    seriesInstanceUid: safeString(dataSet, 'x0020000e'),
+    seriesNumber: safeNumber(dataSet, 'x00200011'),
+    seriesDescription: safeString(dataSet, 'x0008103e'),
+    instanceNumber: safeNumber(dataSet, 'x00200013'),
+    sliceLocation: safeNumber(dataSet, 'x00201041'),
+    sliceThickness: safeNumber(dataSet, 'x00180050'),
+    pixelSpacing: pixelSpacingTuple,
+    imageOrientationPatient:
+      iop !== undefined && iop.length >= 6
+        ? [
+            iop[0] ?? 0,
+            iop[1] ?? 0,
+            iop[2] ?? 0,
+            iop[3] ?? 0,
+            iop[4] ?? 0,
+            iop[5] ?? 0,
+          ]
+        : undefined,
+    windowWidth: safeNumber(dataSet, 'x00281051'),
+    windowCenter: safeNumber(dataSet, 'x00281050'),
     rows: safeUint16(dataSet, 'x00280010') ?? 0,
     columns: safeUint16(dataSet, 'x00280011') ?? 0,
     bitsAllocated: safeUint16(dataSet, 'x00280100'),
