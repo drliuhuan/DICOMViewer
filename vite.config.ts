@@ -7,6 +7,13 @@ export default defineConfig({
   worker: {
     format: 'es',
   },
+  resolve: {
+    alias: {
+      // xmlbuilder2(vtk.js 传递依赖)在浏览器里 extends EventEmitter,
+      // 而 events 是 Node 内置模块——必须指向浏览器 polyfill,否则启动即崩
+      events: 'events/',
+    },
+  },
   build: {
     sourcemap: true,
     chunkSizeWarningLimit: 4096,
