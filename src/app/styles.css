@@ -317,7 +317,36 @@ body {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel);
+  overflow: hidden;
+}
+
+/* M7 虚拟化：标题固定、列表区独立滚动（大序列窗口化渲染） */
+.series-panel-inner {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.series-panel-list {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+}
+
+.series-virtual {
+  position: relative;
+}
+
+.series-item--virtual {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 64px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  overflow: hidden;
 }
 
 .series-panel-title {
@@ -667,10 +696,7 @@ body {
   pointer-events: none;
   font-size: 13px;
   line-height: 1.6;
-  font-family:
-    'JetBrains Mono',
-    Consolas,
-    monospace;
+  font-family: 'JetBrains Mono', Consolas, monospace;
   color: #eaf6ff;
   text-shadow:
     0 1px 2px rgba(0, 0, 0, 0.9),
@@ -739,4 +765,119 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ── M7 浅色主题（FR-12.2；深色为默认） ─────────────────── */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f4f6f8;
+  --panel: #ffffff;
+  --border: #d3dae2;
+  --text: #1c242c;
+  --text-dim: #5b6773;
+  --accent: #1f7ae0;
+  --danger: #d64545;
+}
+
+/* ── M7 设置面板（FR-12 子集） ─────────────────────────── */
+.settings-panel {
+  position: fixed;
+  top: 52px;
+  right: 12px;
+  z-index: 40;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.settings-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.settings-number {
+  width: 84px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.settings-reset {
+  margin-top: 2px;
+}
+
+/* ── M7 快捷键帮助浮层（FR-11 速查表） ─────────────────── */
+.help-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.help-overlay {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.help-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.help-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.help-table th,
+.help-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.help-table th {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.help-keys {
+  white-space: nowrap;
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }

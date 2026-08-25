@@ -3,8 +3,9 @@
  *
  * - 从内存中的 Part-10 缓冲直接读取首帧像素（仅未压缩传输语法），
  *   最近邻降采样到上限尺寸、min-max 灰度归一化，离屏 canvas 渲染为 dataURL；
- * - 模块级缓存按序列 uid 存取，容量上限 100 条（LRU 近似：超出淘汰最早写入），
- *   超出后新序列显示占位图标；
+ * - 模块级缓存按序列 uid 存取，容量上限默认 100 条、可由设置面板调整
+ *   （setThumbnailMaxCount，FR-12.5）；超出淘汰最早写入；
+ * - 大序列列表经 batchGenerateThumbnails 分批生成，批间让出主线程（NFR-2）；
  * - canvas 通过参数注入（默认 document.createElement），便于 Node 下单测。
  *
  * 已知限制（P1）：不支持压缩传输语法/彩色像素的缩略图（回退占位图标）。
@@ -44,7 +45,9 @@ function toInt(value: unknown, fallback: number): number {
 }
 
 /** 从数据集读取首帧灰度像素（多帧文件取第一帧的字节范围） */
-export function readFirstFramePixels(dataSet: ReturnType<typeof parseDicomArrayBuffer>): RawFrame | null {
+export function readFirstFramePixels(
+  dataSet: ReturnType<typeof parseDicomArrayBuffer>,
+): RawFrame | null {
   const element = dataSet.elements['x7fe00010'];
   if (!element || (element.length ?? 0) <= 0) {
     return null;
@@ -70,11 +73,7 @@ export function readFirstFramePixels(dataSet: ReturnType<typeof parseDicomArrayB
     return null;
   }
   const base = dataSet.byteArray as Uint8Array;
-  const view = new DataView(
-    base.buffer,
-    base.byteOffset + element.dataOffset,
-    frameBytes,
-  );
+  const view = new DataView(base.buffer, base.byteOffset + element.dataOffset, frameBytes);
   const samples = new Int32Array(pixelCount);
   for (let index = 0; index < pixelCount; index++) {
     samples[index] =
@@ -165,10 +164,7 @@ export function generateThumbnail(
 ): string | null {
   try {
     const transferSyntax = parseDicomArrayBuffer(buffer).string('x00020010');
-    if (
-      transferSyntax !== undefined &&
-      !UNCOMPRESSED_TRANSFER_SYNTAXES.has(transferSyntax)
-    ) {
+    if (transferSyntax !== undefined && !UNCOMPRESSED_TRANSFER_SYNTAXES.has(transferSyntax)) {
       return null;
     }
     const dataSet = parseDicomArrayBuffer(buffer);
@@ -190,13 +186,33 @@ export function generateThumbnail(
 // ── 模块级缓存（uid → dataURL），releaseAll 时清空 ──
 const thumbnailCache = new Map<string, string>();
 
+/** 当前生效的缓存上限（默认 100，可由设置面板调整，FR-12.5/NFR-4） */
+let activeMaxCount = THUMBNAIL_MAX_COUNT;
+
 export function getThumbnail(seriesUid: string): string | undefined {
   return thumbnailCache.get(seriesUid);
 }
 
+/** 调整缓存上限；下调时立即淘汰最早写入的多余条目（保留最新） */
+export function setThumbnailMaxCount(count: number): void {
+  const floored = Math.floor(count);
+  activeMaxCount = Number.isFinite(floored) ? Math.max(1, floored) : 1;
+  while (thumbnailCache.size > activeMaxCount) {
+    const oldest = thumbnailCache.keys().next();
+    if (oldest.done) {
+      break;
+    }
+    thumbnailCache.delete(oldest.value);
+  }
+}
+
+export function getThumbnailMaxCount(): number {
+  return activeMaxCount;
+}
+
 /** 写入缓存；达到上限且为新键时淘汰最早写入的条目 */
 export function setThumbnail(seriesUid: string, dataUrl: string): void {
-  if (!thumbnailCache.has(seriesUid) && thumbnailCache.size >= THUMBNAIL_MAX_COUNT) {
+  if (!thumbnailCache.has(seriesUid) && thumbnailCache.size >= activeMaxCount) {
     const oldest = thumbnailCache.keys().next();
     if (!oldest.done) {
       thumbnailCache.delete(oldest.value);
@@ -212,4 +228,68 @@ export function clearThumbnails(): void {
 /** 当前缓存条数（测试/诊断用） */
 export function thumbnailCount(): number {
   return thumbnailCache.size;
+}
+
+// ── 分批生成（NFR-1/NFR-2：大序列列表不阻塞主线程） ──
+
+export interface ThumbnailSourceItem {
+  seriesUid: string;
+  /** 调用方自定义数据源句柄（如首帧 imageId），由 create 解释 */
+  source: unknown;
+}
+
+export interface BatchThumbnailOptions {
+  /** 每批处理的序列数，批间让出主线程（默认 10） */
+  batchSize?: number;
+  /** 批间让出函数（默认 setTimeout 0），可注入以便单测 */
+  yieldTo?: () => Promise<void>;
+  /** 每批新增/更新的缩略图（uid → dataURL），批内无新增时不回调 */
+  onUpdate?: (updates: Record<string, string>) => void;
+}
+
+const defaultYield = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+/**
+ * 分批为序列生成缩略图（FR-2.4 + NFR-2 性能）：
+ * - 已命中缓存（getThumbnail）的序列直接跳过；
+ * - create 抛错视为该序列生成失败（保持占位图标），不影响其余序列；
+ * - 每 batchSize 个之间 await yieldTo() 让出主线程，避免大序列列表卡 UI；
+ * - 返回成功生成的条数。
+ */
+export async function batchGenerateThumbnails(
+  items: readonly ThumbnailSourceItem[],
+  create: (item: ThumbnailSourceItem) => string | null,
+  options: BatchThumbnailOptions = {},
+): Promise<number> {
+  const rawBatchSize = Math.floor(options.batchSize ?? 10);
+  const batchSize = Number.isFinite(rawBatchSize) ? Math.max(1, rawBatchSize) : 10;
+  const yieldTo = options.yieldTo ?? defaultYield;
+  let generated = 0;
+  for (let start = 0; start < items.length; start += batchSize) {
+    const chunk = items.slice(start, start + batchSize);
+    const updates: Record<string, string> = {};
+    for (const item of chunk) {
+      if (getThumbnail(item.seriesUid) !== undefined) {
+        continue;
+      }
+      let dataUrl: string | null = null;
+      try {
+        dataUrl = create(item);
+      } catch {
+        dataUrl = null;
+      }
+      if (dataUrl !== null) {
+        setThumbnail(item.seriesUid, dataUrl);
+        updates[item.seriesUid] = dataUrl;
+        generated += 1;
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      options.onUpdate?.(updates);
+    }
+    if (start + batchSize < items.length) {
+      await yieldTo();
+    }
+  }
+  return generated;
 }

@@ -18,7 +18,10 @@ export type ShortcutAction =
   | { type: 'slicePrev' }
   | { type: 'sliceNext' }
   | { type: 'resetAll' }
-  | { type: 'cancelTool' };
+  | { type: 'cancelTool' }
+  | { type: 'cinePlaceholder' }
+  | { type: 'crosshairPlaceholder' }
+  | { type: 'deleteAnnotationPlaceholder' };
 
 export interface KeyEventLike {
   key: string;
@@ -37,8 +40,7 @@ export function isTextInputTarget(target: EventTarget | null): boolean {
     return false;
   }
   const element = target as { tagName?: unknown; isContentEditable?: unknown };
-  const tagName =
-    typeof element.tagName === 'string' ? element.tagName.toUpperCase() : '';
+  const tagName = typeof element.tagName === 'string' ? element.tagName.toUpperCase() : '';
   return (
     tagName === 'INPUT' ||
     tagName === 'TEXTAREA' ||
@@ -83,8 +85,18 @@ export function resolveShortcut(event: KeyEventLike): ShortcutAction | null {
       return { type: 'placeholderMeasurement' };
     case 'f':
       return { type: 'fit' };
+    // Cine 播放（FR-3.8 P1，后续里程碑）
+    case ' ':
+      return { type: 'cinePlaceholder' };
+    // MPR 十字线（FR-6，后续里程碑）
+    case 'c':
+      return { type: 'crosshairPlaceholder' };
     case 'Escape':
       return { type: 'cancelTool' };
+    // 删除选中标注（FR-5.9/M3）
+    case 'Delete':
+    case 'Backspace':
+      return { type: 'deleteAnnotationPlaceholder' };
     default:
       break;
   }

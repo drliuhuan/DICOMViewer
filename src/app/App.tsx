@@ -4,9 +4,14 @@
  * - 布局：1×1 / 1×2 / 2×2（按钮 + 快捷键 1/2/4），各视口独立加载序列；
  * - 激活视口：点击视口切换；工具栏与快捷键作用于激活视口；
  * - 序列面板：点击序列加载到当前激活视口；拖拽序列卡片到指定视口放置加载
- *   （FR-2.8 单击语义 + 拖拽扩展）。
+ *   （FR-2.8 单击语义 + 拖拽扩展）；
+ * - M7：i18n 上下文（zh 默认，FR-12.3）、设置面板（FR-12 子集）、
+ *   快捷键帮助浮层（FR-11）、缩略图分批生成（NFR-2）。
+ *
+ * TODO(FR-12.3/NFR-9)：其余存量文案（进度条/toast/状态栏/错误报告等）迁入 i18n 词典。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { cache } from '@cornerstonejs/core';
 import {
   openDicomFiles,
   type LoadFailure,
@@ -15,9 +20,9 @@ import {
 import { dedupeBySopUid } from '../features/series/dedupe';
 import { releaseAll, releaseSeries } from '../features/series/release';
 import {
+  batchGenerateThumbnails,
   generateThumbnail,
-  getThumbnail,
-  setThumbnail,
+  setThumbnailMaxCount,
 } from '../features/series/thumbnails';
 import { getBufferForImageId } from '../dicom/imageId';
 import {
@@ -28,25 +33,33 @@ import {
   type ScannedFile,
 } from '../features/loading/directoryScan';
 import { ErrorReportPanel } from '../ui/components/ErrorReportPanel';
-import { buildSeriesStacks, type SeriesStack, type StackItem } from '../features/series/buildStacks';
+import {
+  buildSeriesStacks,
+  type SeriesStack,
+  type StackItem,
+} from '../features/series/buildStacks';
 import { buildSeriesTree } from '../features/series/seriesTree';
 import { SeriesPanel } from '../ui/components/SeriesPanel';
+import { HelpOverlay } from '../ui/components/HelpOverlay';
+import { SettingsPanel } from '../ui/components/SettingsPanel';
 import type { ViewportApi, ViewportUiState } from '../features/viewer/DicomViewport';
 import { ViewerCell } from '../features/viewer/ViewerCell';
 import { isSeriesDragEvent } from '../features/viewer/seriesDragDrop';
-import {
-  PLACEHOLDER_MEASUREMENT_TOOLS,
-  ToolNames,
-} from '../features/viewer/toolSetup';
+import { PLACEHOLDER_MEASUREMENT_TOOLS, ToolNames } from '../features/viewer/toolSetup';
 import {
   WW_WL_PRESETS,
   findPresetById,
   getDefaultWwWlForModality,
 } from '../features/viewer/wwPresets';
+import { isTextInputTarget, resolveShortcut } from '../features/shortcuts/shortcuts';
 import {
-  isTextInputTarget,
-  resolveShortcut,
-} from '../features/shortcuts/shortcuts';
+  applySettingsEffects,
+  loadSettings,
+  sanitizeSettings,
+  saveSettings,
+  type AppSettings,
+} from '../features/settings/settings';
+import { I18nContext, translate, type I18nContextValue } from '../ui/i18n/i18n';
 
 type LoadState =
   | { status: 'idle' }
@@ -104,6 +117,10 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   /** 序列 uid → 缩略图 dataURL（FR-2.4） */
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
+  /** 应用设置（FR-12 子集）：localStorage 持久化，挂载时应用主题与缓存上限 */
+  const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  const [showHelp, setShowHelp] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -123,6 +140,38 @@ export default function App() {
     setToast(message);
     window.setTimeout(() => setToast(null), 2200);
   }, []);
+
+  // ── 设置（FR-12 子集）────────────────────────────────
+  /** 变更设置：sanitize → 持久化 → 应用副作用（主题/图像缓存/缩略图 LRU） */
+  const updateSettings = useCallback((patch: Partial<AppSettings>) => {
+    setSettings((prev) => {
+      const next = sanitizeSettings({ ...prev, ...patch });
+      saveSettings(next);
+      applySettingsEffects(next, {
+        cacheApi: cache,
+        setThumbnailLimit: setThumbnailMaxCount,
+      });
+      return next;
+    });
+  }, []);
+
+  // 挂载时应用已持久化的设置（主题 + 缩略图上限；
+  // Cornerstone 缓存上限仅在设置面板变更时应用，避免管线未初始化时触碰 cache）
+  useEffect(() => {
+    applySettingsEffects(settings, { setThumbnailLimit: setThumbnailMaxCount });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** i18n 上下文（FR-12.3）：语言跟随设置，默认 zh */
+  const i18n = useMemo<I18nContextValue>(
+    () => ({
+      lang: settings.language,
+      setLang: (next) => updateSettings({ language: next }),
+      t: (key, vars) => translate(settings.language, key, vars),
+    }),
+    [settings.language, updateSettings],
+  );
+  const { t } = i18n;
 
   // ── 视口注册与状态收集 ──────────────────────────────
   const registerApi = useCallback((id: string, api: ViewportApi | null) => {
@@ -152,74 +201,79 @@ export default function App() {
     assignmentsRef.current = assignments;
   }, [assignments]);
 
-  const handleFiles = useCallback(async (inputs: readonly (ScannedFile | File)[]) => {
-    if (inputs.length === 0) {
-      return;
-    }
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setLoadState({ status: 'loading', done: 0, total: inputs.length });
-    try {
-      const { opened, failures: failed, cancelled } = await openDicomFiles(inputs, {
-        signal: controller.signal,
-        onProgress: (done, total) => {
-          // 仅最新一次打开操作有权更新进度（防止快速连续打开时旧任务回写）
-          if (abortRef.current === controller) {
-            setLoadState({ status: 'loading', done, total });
-          }
-        },
-      });
-      // FR-1.11 去重：SOPInstanceUID 已存在（历史批次或本批次内）则跳过
-      const deduped = dedupeBySopUid(opened, knownUidsRef.current);
-      knownUidsRef.current = deduped.nextUids;
-      openedFilesRef.current = [...openedFilesRef.current, ...deduped.kept];
-      const stacks = buildSeriesStacks(openedFilesRef.current);
-      setSeriesList(stacks);
-      setFailures(failed);
-      if (deduped.duplicateCount > 0) {
-        showToast(`已跳过 ${deduped.duplicateCount} 个重复文件`);
-      }
-      if (stacks.length === 0) {
-        setLoadState(
-          cancelled
-            ? { status: 'idle' }
-            : {
-                status: 'error',
-                message: failed[0]?.message ?? '没有可显示的 DICOM 文件',
-              },
-        );
-        if (cancelled) {
-          showToast('已取消打开');
-        }
+  const handleFiles = useCallback(
+    async (inputs: readonly (ScannedFile | File)[]) => {
+      if (inputs.length === 0) {
         return;
       }
-      // 仅当当前没有任何视口加载数据时自动指派首个序列（累积加载不打断已有视图）
-      const anyLoaded = Object.values(assignmentsRef.current).some((uid) => uid !== null);
-      if (!anyLoaded || cancelled) {
-        const firstUid = stacks[0]?.seriesUid ?? null;
-        setAssignments(
-          Object.fromEntries(
-            ALL_VIEWPORT_IDS.map((id) => [id, id === 'vp-0' ? firstUid : null]),
-          ),
-        );
-        setActiveViewportId('vp-0');
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setLoadState({ status: 'loading', done: 0, total: inputs.length });
+      try {
+        const {
+          opened,
+          failures: failed,
+          cancelled,
+        } = await openDicomFiles(inputs, {
+          signal: controller.signal,
+          onProgress: (done, total) => {
+            // 仅最新一次打开操作有权更新进度（防止快速连续打开时旧任务回写）
+            if (abortRef.current === controller) {
+              setLoadState({ status: 'loading', done, total });
+            }
+          },
+        });
+        // FR-1.11 去重：SOPInstanceUID 已存在（历史批次或本批次内）则跳过
+        const deduped = dedupeBySopUid(opened, knownUidsRef.current);
+        knownUidsRef.current = deduped.nextUids;
+        openedFilesRef.current = [...openedFilesRef.current, ...deduped.kept];
+        const stacks = buildSeriesStacks(openedFilesRef.current);
+        setSeriesList(stacks);
+        setFailures(failed);
+        if (deduped.duplicateCount > 0) {
+          showToast(`已跳过 ${deduped.duplicateCount} 个重复文件`);
+        }
+        if (stacks.length === 0) {
+          setLoadState(
+            cancelled
+              ? { status: 'idle' }
+              : {
+                  status: 'error',
+                  message: failed[0]?.message ?? '没有可显示的 DICOM 文件',
+                },
+          );
+          if (cancelled) {
+            showToast('已取消打开');
+          }
+          return;
+        }
+        // 仅当当前没有任何视口加载数据时自动指派首个序列（累积加载不打断已有视图）
+        const anyLoaded = Object.values(assignmentsRef.current).some((uid) => uid !== null);
+        if (!anyLoaded || cancelled) {
+          const firstUid = stacks[0]?.seriesUid ?? null;
+          setAssignments(
+            Object.fromEntries(ALL_VIEWPORT_IDS.map((id) => [id, id === 'vp-0' ? firstUid : null])),
+          );
+          setActiveViewportId('vp-0');
+        }
+        setLoadState({ status: 'loaded' });
+        if (cancelled) {
+          showToast(`已取消：保留已解析的 ${opened.length} 个文件`);
+        }
+      } catch (error) {
+        console.error('[App] 打开文件失败', error);
+        setLoadState({
+          status: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+        }
       }
-      setLoadState({ status: 'loaded' });
-      if (cancelled) {
-        showToast(`已取消：保留已解析的 ${opened.length} 个文件`);
-      }
-    } catch (error) {
-      console.error('[App] 打开文件失败', error);
-      setLoadState({
-        status: 'error',
-        message: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      if (abortRef.current === controller) {
-        abortRef.current = null;
-      }
-    }
-  }, [showToast]);
+    },
+    [showToast],
+  );
 
   /** 取消当前解析：保留已完成的文件，丢弃未开始的（FR-1.6） */
   const cancelLoading = useCallback(() => {
@@ -323,50 +377,50 @@ export default function App() {
       : null;
 
   /** 指定堆栈的默认窗宽窗位（文件自带优先，其次模态预设） */
-  const getDefaultWwWl = useCallback(
-    (stack: SeriesStack | null) => {
-      if (stack === null) {
-        return undefined;
-      }
-      const summary = stack.items[0]?.summary;
-      return getDefaultWwWlForModality(summary?.modality ?? '', {
-        windowWidth: summary?.windowWidth,
-        windowCenter: summary?.windowCenter,
-      });
-    },
-    [],
-  );
+  const getDefaultWwWl = useCallback((stack: SeriesStack | null) => {
+    if (stack === null) {
+      return undefined;
+    }
+    const summary = stack.items[0]?.summary;
+    return getDefaultWwWlForModality(summary?.modality ?? '', {
+      windowWidth: summary?.windowWidth,
+      windowCenter: summary?.windowCenter,
+    });
+  }, []);
 
   const totalInstances = seriesList.reduce((sum, s) => sum + s.items.length, 0);
 
   /** 患者→检查→序列树（FR-2.1） */
   const patientTree = useMemo(() => buildSeriesTree(seriesList), [seriesList]);
 
-  // 缩略图懒生成（FR-2.4）：仅处理缓存中没有的序列；缓存上限 100 条由
-  // setThumbnail 内部保证，超出后新序列显示占位图标。
+  // 缩略图分批懒生成（FR-2.4 + NFR-2）：跳过缓存命中项；每批（默认 10 个）
+  // 之间让出主线程，避免大序列列表卡 UI；缓存上限由设置控制（FR-12.5）。
   useEffect(() => {
-    const updates: Record<string, string> = {};
-    for (const stack of seriesList) {
-      if (getThumbnail(stack.seriesUid) !== undefined) {
-        continue;
-      }
-      const firstImageId = stack.items[0]?.imageId;
-      if (!firstImageId) {
-        continue;
-      }
-      try {
-        const dataUrl = generateThumbnail(getBufferForImageId(firstImageId));
-        if (dataUrl !== null) {
-          setThumbnail(stack.seriesUid, dataUrl);
-          updates[stack.seriesUid] = dataUrl;
+    let disposed = false;
+    const items = seriesList.map((stack) => ({
+      seriesUid: stack.seriesUid,
+      source: stack.items[0]?.imageId,
+    }));
+    void batchGenerateThumbnails(
+      items,
+      (item) => {
+        const imageId = item.source;
+        if (typeof imageId !== 'string' || imageId === '') {
+          return null;
         }
-      } catch {
-        // 缓冲已被释放等异常：保持占位图标
-      }
-    }
-    if (Object.keys(updates).length > 0) {
-      setThumbnails((prev) => ({ ...prev, ...updates }));
-    }
+        return generateThumbnail(getBufferForImageId(imageId));
+      },
+      {
+        onUpdate: (updates) => {
+          if (!disposed) {
+            setThumbnails((prev) => ({ ...prev, ...updates }));
+          }
+        },
+      },
+    );
+    return () => {
+      disposed = true;
+    };
   }, [seriesList]);
 
   // ── 动作（工具栏 + 快捷键共用） ────────────────────
@@ -437,12 +491,10 @@ export default function App() {
       );
       // 从累积数据中移除该序列的实例，并撤销其 SOPInstanceUID 去重标记（允许重新打开）
       const removedFiles = openedFilesRef.current.filter(
-        (file) =>
-          (file.summary.seriesInstanceUid ?? `__file__:${file.fileName}`) === seriesUid,
+        (file) => (file.summary.seriesInstanceUid ?? `__file__:${file.fileName}`) === seriesUid,
       );
       openedFilesRef.current = openedFilesRef.current.filter(
-        (file) =>
-          (file.summary.seriesInstanceUid ?? `__file__:${file.fileName}`) !== seriesUid,
+        (file) => (file.summary.seriesInstanceUid ?? `__file__:${file.fileName}`) !== seriesUid,
       );
       for (const file of removedFiles) {
         if (file.summary.sopInstanceUid) {
@@ -460,9 +512,7 @@ export default function App() {
     if (!window.confirm('确定要清空所有已加载的数据吗？将释放全部图像缓存与内存。')) {
       return;
     }
-    setAssignments(
-      Object.fromEntries(ALL_VIEWPORT_IDS.map((id) => [id, null])),
-    );
+    setAssignments(Object.fromEntries(ALL_VIEWPORT_IDS.map((id) => [id, null])));
     openedFilesRef.current = [];
     knownUidsRef.current = new Set();
     setSeriesList([]);
@@ -536,6 +586,15 @@ export default function App() {
         case 'resetAll':
           api?.resetView();
           break;
+        case 'cinePlaceholder':
+          showToast('Cine 播放将在后续里程碑提供（FR-3.8）');
+          break;
+        case 'crosshairPlaceholder':
+          showToast('MPR 定位线将在后续里程碑提供（FR-6）');
+          break;
+        case 'deleteAnnotationPlaceholder':
+          showToast('标注删除将在 M3 提供（FR-5.9）');
+          break;
         case 'cancelTool':
           setPrimaryTool(ToolNames.windowLevel);
           api?.setPrimaryTool(ToolNames.windowLevel);
@@ -549,356 +608,389 @@ export default function App() {
   const layoutConfig = LAYOUT_CONFIG[layout];
 
   return (
-    <div className={`app${dragActive ? ' app--drag-active' : ''}`}>
-      <header className="toolbar">
-        <span className="brand">DICOM 查看器 · M2</span>
-        <button
-          type="button"
-          className="open-button"
-          onClick={() => fileInputRef.current?.click()}
-        >
-          打开文件
-        </button>
-        <button
-          type="button"
-          className="open-button open-button--secondary"
-          title={supportsDirectoryPicker() ? '递归打开整个文件夹' : '递归打开整个文件夹（含子文件夹）'}
-          onClick={() => void openFolder()}
-        >
-          打开文件夹
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="file-input"
-          aria-label="选择 DICOM 文件（可多选）"
-          onChange={(event) => {
-            const files = event.target.files ? Array.from(event.target.files) : [];
-            void handleFiles(files);
-            event.target.value = '';
-          }}
-        />
-        <input
-          ref={folderInputRef}
-          type="file"
-          multiple
-          className="file-input"
-          aria-label="选择 DICOM 文件夹（递归包含子文件夹）"
-          onChange={(event) => {
-            const files = event.target.files ? Array.from(event.target.files) : [];
-            void handleFiles(files);
-            event.target.value = '';
-          }}
-        />
-
-        <div className="toolbar-group" role="group" aria-label="布局">
-          {(Object.keys(LAYOUT_CONFIG) as LayoutKey[]).map((key) => (
-            <button
-              type="button"
-              key={key}
-              className={`tool-button${layout === key ? ' tool-button--active' : ''}`}
-              title={`布局 ${key.replace('x', '×')}（快捷键 ${
-                { '1x1': '1', '1x2': '2', '2x2': '4' }[key]
-              }）`}
-              onClick={() => switchLayout(LAYOUT_CONFIG[key].cells)}
-            >
-              {key.replace('x', '×')}
-            </button>
-          ))}
-        </div>
-
-        <div className="toolbar-group" role="group" aria-label="工具">
+    <I18nContext.Provider value={i18n}>
+      <div className={`app${dragActive ? ' app--drag-active' : ''}`}>
+        <header className="toolbar">
+          <span className="brand">DICOM 查看器 · M2</span>
           <button
             type="button"
-            className={`tool-button${primaryTool === ToolNames.windowLevel ? ' tool-button--active' : ''}`}
-            title="窗宽窗位（左键拖动，快捷键 W）"
-            onClick={() => activateTool(ToolNames.windowLevel)}
+            className="open-button"
+            onClick={() => fileInputRef.current?.click()}
           >
-            窗宽窗位
+            {t('app.openFile')}
           </button>
           <button
             type="button"
-            className={`tool-button${primaryTool === ToolNames.zoom ? ' tool-button--active' : ''}`}
-            title="缩放（拖动 / Ctrl+滚轮，快捷键 Z）"
-            onClick={() => activateTool(ToolNames.zoom)}
+            className="open-button open-button--secondary"
+            title={
+              supportsDirectoryPicker() ? '递归打开整个文件夹' : '递归打开整个文件夹（含子文件夹）'
+            }
+            onClick={() => void openFolder()}
           >
-            缩放
+            {t('app.openFolder')}
           </button>
-          <button
-            type="button"
-            className={`tool-button${primaryTool === ToolNames.pan ? ' tool-button--active' : ''}`}
-            title="平移（中键拖动，快捷键 P）"
-            onClick={() => activateTool(ToolNames.pan)}
-          >
-            平移
-          </button>
-          <button
-            type="button"
-            className={`tool-button${primaryTool === ToolNames.stackScroll ? ' tool-button--active' : ''}`}
-            title="层滚动（激活后拖动翻层；滚轮默认翻页）"
-            onClick={() => activateTool(ToolNames.stackScroll)}
-          >
-            层滚动
-          </button>
-        </div>
-
-        {hasStack && (
-          <div className="toolbar-group" aria-label="窗宽窗位">
-            <select
-              className="preset-select"
-              value={activePresetId}
-              onChange={(event) => applyPreset(event.target.value)}
-              aria-label="窗宽窗位预设"
-            >
-              <option value="">自定义</option>
-              {WW_WL_PRESETS.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.label}
-                </option>
-              ))}
-            </select>
-            <label className="wwwl-field">
-              WW
-              <input
-                type="number"
-                className="wwwl-input"
-                value={wwDraft}
-                min={1}
-                step={1}
-                onChange={(event) => setWwDraft(event.target.value)}
-                onBlur={commitWwWlDraft}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    commitWwWlDraft();
-                  }
-                }}
-                aria-label="窗宽"
-              />
-            </label>
-            <label className="wwwl-field">
-              WL
-              <input
-                type="number"
-                className="wwwl-input"
-                value={wlDraft}
-                step={1}
-                onChange={(event) => setWlDraft(event.target.value)}
-                onBlur={commitWwWlDraft}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    commitWwWlDraft();
-                  }
-                }}
-                aria-label="窗位"
-              />
-            </label>
-            <button
-              type="button"
-              className="tool-button"
-              title="恢复默认窗宽窗位"
-              onClick={() => activeApi?.resetWindowLevel()}
-            >
-              重置窗宽窗位
-            </button>
-          </div>
-        )}
-
-        {hasStack && (
-          <div className="toolbar-group" aria-label="视图">
-            <button
-              type="button"
-              className="tool-button"
-              title="放大（+）"
-              onClick={() => activeApi?.zoomStep(1.25)}
-            >
-              ＋
-            </button>
-            <button
-              type="button"
-              className="tool-button"
-              title="缩小（−）"
-              onClick={() => activeApi?.zoomStep(0.8)}
-            >
-              －
-            </button>
-            <button
-              type="button"
-              className="tool-button"
-              title="1:1 原始像素显示"
-              onClick={() => activeApi?.oneToOne()}
-            >
-              1:1
-            </button>
-            <button
-              type="button"
-              className="tool-button"
-              title="适应窗口（F / 双击视口）"
-              onClick={() => activeApi?.fitToWindow()}
-            >
-              适应窗口
-            </button>
-            <button
-              type="button"
-              className="tool-button"
-              title="重置视图：窗宽窗位+缩放+平移（Shift+R）"
-              onClick={() => activeApi?.resetView()}
-            >
-              重置视图
-            </button>
-          </div>
-        )}
-
-        {hasStack && (
-          <div className="toolbar-group" aria-label="翻页">
-            <button
-              type="button"
-              className="tool-button"
-              disabled={activeUi.sliceIndex <= 0}
-              onClick={() => activeApi?.scrollSlice(-1)}
-              title="上一帧（PageUp / ←）"
-            >
-              ◀
-            </button>
-            <span className="slice-counter">
-              第 {activeUi.sliceIndex + 1} / {activeUi.sliceCount} 层
-            </span>
-            <button
-              type="button"
-              className="tool-button"
-              disabled={activeUi.sliceIndex >= activeUi.sliceCount - 1}
-              onClick={() => activeApi?.scrollSlice(1)}
-              title="下一帧（PageDown / →）"
-            >
-              ▶
-            </button>
-          </div>
-        )}
-
-        <button
-          type="button"
-          className={`tool-button${showInfo ? ' tool-button--active' : ''}`}
-          title="信息覆盖文字开关（I）"
-          onClick={() => setShowInfo((prev) => !prev)}
-        >
-          信息
-        </button>
-      </header>
-
-      {loadState.status === 'error' && (
-        <div role="alert" className="error-banner">
-          <span>无法打开文件：{loadState.message}</span>
-          <button type="button" onClick={() => setLoadState({ status: 'idle' })}>
-            关闭
-          </button>
-        </div>
-      )}
-      {loadState.status !== 'error' && failures.length > 0 && (
-        <ErrorReportPanel failures={failures} />
-      )}
-
-      <main className="workspace">
-        {patientTree.length > 0 && (
-          <aside className="series-panel" aria-label="序列面板">
-            <SeriesPanel
-              patients={patientTree}
-              activeUid={assignments[activeViewportId] ?? null}
-              onLoadSeries={loadSeriesToViewport}
-              onCloseSeries={closeSeries}
-              thumbnails={thumbnails}
-            />
-            <button type="button" className="tool-button clear-all-button" onClick={clearAll}>
-              清空全部
-            </button>
-          </aside>
-        )}
-
-        <div className="viewer-grid-wrap">
-          <div
-            className="viewer-grid"
-            style={{
-              gridTemplateColumns: `repeat(${layoutConfig.columns}, minmax(0, 1fr))`,
-              gridTemplateRows: `repeat(${Math.ceil(layoutConfig.cells / layoutConfig.columns)}, minmax(0, 1fr))`,
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="file-input"
+            aria-label="选择 DICOM 文件（可多选）"
+            onChange={(event) => {
+              const files = event.target.files ? Array.from(event.target.files) : [];
+              void handleFiles(files);
+              event.target.value = '';
             }}
-          >
-            {ALL_VIEWPORT_IDS.slice(0, layoutConfig.cells).map((id) => {
-              const stack = stackByUid.get(assignments[id] ?? '') ?? null;
-              return (
-                <ViewerCell
-                  key={id}
-                  viewportId={id}
-                  items={stack?.items ?? EMPTY_ITEMS}
-                  defaultWwWl={getDefaultWwWl(stack)}
-                  showInfo={showInfo}
-                  isActive={id === activeViewportId}
-                  badgeLabel={
-                    stack === null
-                      ? null
-                      : `${stack.modality}${stack.description ? ` · ${stack.description}` : ''}`
-                  }
-                  onActivate={setActiveViewportId}
-                  registerApi={registerApi}
-                  onUiChange={handleUiChange}
-                  onDropSeries={loadSeriesTo}
-                />
-              );
-            })}
+          />
+          <input
+            ref={folderInputRef}
+            type="file"
+            multiple
+            className="file-input"
+            aria-label="选择 DICOM 文件夹（递归包含子文件夹）"
+            onChange={(event) => {
+              const files = event.target.files ? Array.from(event.target.files) : [];
+              void handleFiles(files);
+              event.target.value = '';
+            }}
+          />
+
+          <div className="toolbar-group" role="group" aria-label="布局">
+            {(Object.keys(LAYOUT_CONFIG) as LayoutKey[]).map((key) => (
+              <button
+                type="button"
+                key={key}
+                className={`tool-button${layout === key ? ' tool-button--active' : ''}`}
+                title={`布局 ${key.replace('x', '×')}（快捷键 ${
+                  { '1x1': '1', '1x2': '2', '2x2': '4' }[key]
+                }）`}
+                onClick={() => switchLayout(LAYOUT_CONFIG[key].cells)}
+              >
+                {key.replace('x', '×')}
+              </button>
+            ))}
           </div>
 
-          {loadState.status === 'loading' &&
-            (loadState.total >= PROGRESS_BAR_MIN_FILES ? (
-              <div className="load-progress" role="status" aria-live="polite">
-                <div className="load-progress-text">
-                  正在解析 {loadState.done} / {loadState.total} 个文件…
-                </div>
-                <div
-                  className="load-progress-bar"
-                  role="progressbar"
-                  aria-valuemin={0}
-                  aria-valuemax={loadState.total}
-                  aria-valuenow={loadState.done}
-                  aria-label="解析进度"
-                >
-                  <div
-                    className="load-progress-bar-fill"
-                    style={{
-                      width: `${Math.round((loadState.done / Math.max(1, loadState.total)) * 100)}%`,
-                    }}
-                  />
-                </div>
-                <button type="button" className="tool-button" onClick={cancelLoading}>
-                  取消
-                </button>
-              </div>
-            ) : (
-              <div className="empty-hint">
-                正在解析 {loadState.done} / {loadState.total} 个文件…
-              </div>
-            ))}
-          {(loadState.status === 'idle' ||
-            (loadState.status === 'error' && seriesList.length === 0)) && (
-            <div className="empty-hint">
-              将 DICOM 文件或整个文件夹拖拽到窗口任意位置，
-              <br />
-              或点击上方「打开文件 / 打开文件夹」按钮
+          <div className="toolbar-group" role="group" aria-label="工具">
+            <button
+              type="button"
+              className={`tool-button${primaryTool === ToolNames.windowLevel ? ' tool-button--active' : ''}`}
+              title="窗宽窗位（左键拖动，快捷键 W）"
+              onClick={() => activateTool(ToolNames.windowLevel)}
+            >
+              窗宽窗位
+            </button>
+            <button
+              type="button"
+              className={`tool-button${primaryTool === ToolNames.zoom ? ' tool-button--active' : ''}`}
+              title="缩放（拖动 / Ctrl+滚轮，快捷键 Z）"
+              onClick={() => activateTool(ToolNames.zoom)}
+            >
+              缩放
+            </button>
+            <button
+              type="button"
+              className={`tool-button${primaryTool === ToolNames.pan ? ' tool-button--active' : ''}`}
+              title="平移（中键拖动，快捷键 P）"
+              onClick={() => activateTool(ToolNames.pan)}
+            >
+              平移
+            </button>
+            <button
+              type="button"
+              className={`tool-button${primaryTool === ToolNames.stackScroll ? ' tool-button--active' : ''}`}
+              title="层滚动（激活后拖动翻层；滚轮默认翻页）"
+              onClick={() => activateTool(ToolNames.stackScroll)}
+            >
+              层滚动
+            </button>
+          </div>
+
+          {hasStack && (
+            <div className="toolbar-group" aria-label="窗宽窗位">
+              <select
+                className="preset-select"
+                value={activePresetId}
+                onChange={(event) => applyPreset(event.target.value)}
+                aria-label="窗宽窗位预设"
+              >
+                <option value="">自定义</option>
+                {WW_WL_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+              <label className="wwwl-field">
+                WW
+                <input
+                  type="number"
+                  className="wwwl-input"
+                  value={wwDraft}
+                  min={1}
+                  step={1}
+                  onChange={(event) => setWwDraft(event.target.value)}
+                  onBlur={commitWwWlDraft}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      commitWwWlDraft();
+                    }
+                  }}
+                  aria-label="窗宽"
+                />
+              </label>
+              <label className="wwwl-field">
+                WL
+                <input
+                  type="number"
+                  className="wwwl-input"
+                  value={wlDraft}
+                  step={1}
+                  onChange={(event) => setWlDraft(event.target.value)}
+                  onBlur={commitWwWlDraft}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      commitWwWlDraft();
+                    }
+                  }}
+                  aria-label="窗位"
+                />
+              </label>
+              <button
+                type="button"
+                className="tool-button"
+                title="恢复默认窗宽窗位"
+                onClick={() => activeApi?.resetWindowLevel()}
+              >
+                重置窗宽窗位
+              </button>
             </div>
           )}
-          {dragActive && <div className="drop-overlay">松开以打开文件</div>}
-        </div>
-      </main>
 
-      {toast !== null && (
-        <div role="status" className="toast">
-          {toast}
-        </div>
-      )}
+          {hasStack && (
+            <div className="toolbar-group" aria-label="视图">
+              <button
+                type="button"
+                className="tool-button"
+                title="放大（+）"
+                onClick={() => activeApi?.zoomStep(1.25)}
+              >
+                ＋
+              </button>
+              <button
+                type="button"
+                className="tool-button"
+                title="缩小（−）"
+                onClick={() => activeApi?.zoomStep(0.8)}
+              >
+                －
+              </button>
+              <button
+                type="button"
+                className="tool-button"
+                title="1:1 原始像素显示"
+                onClick={() => activeApi?.oneToOne()}
+              >
+                1:1
+              </button>
+              <button
+                type="button"
+                className="tool-button"
+                title="适应窗口（F / 双击视口）"
+                onClick={() => activeApi?.fitToWindow()}
+              >
+                适应窗口
+              </button>
+              <button
+                type="button"
+                className="tool-button"
+                title="重置视图：窗宽窗位+缩放+平移（Shift+R）"
+                onClick={() => activeApi?.resetView()}
+              >
+                重置视图
+              </button>
+            </div>
+          )}
 
-      <footer className="statusbar">
-        {activeStack !== null
-          ? `${activeViewportId} · ${activeStack.modality} · ${activeStack.items.length} 层 · 全部 ${totalInstances} 个实例`
-          : '未加载数据'}
-        {failures.length > 0 ? ` · ${failures.length} 个失败` : ''}
-      </footer>
-    </div>
+          {hasStack && (
+            <div className="toolbar-group" aria-label="翻页">
+              <button
+                type="button"
+                className="tool-button"
+                disabled={activeUi.sliceIndex <= 0}
+                onClick={() => activeApi?.scrollSlice(-1)}
+                title="上一帧（PageUp / ←）"
+              >
+                ◀
+              </button>
+              <span className="slice-counter">
+                第 {activeUi.sliceIndex + 1} / {activeUi.sliceCount} 层
+              </span>
+              <button
+                type="button"
+                className="tool-button"
+                disabled={activeUi.sliceIndex >= activeUi.sliceCount - 1}
+                onClick={() => activeApi?.scrollSlice(1)}
+                title="下一帧（PageDown / →）"
+              >
+                ▶
+              </button>
+            </div>
+          )}
+
+          <button
+            type="button"
+            className={`tool-button${showInfo ? ' tool-button--active' : ''}`}
+            title="信息覆盖文字开关（I）"
+            onClick={() => setShowInfo((prev) => !prev)}
+          >
+            {t('app.info')}
+          </button>
+          <button
+            type="button"
+            className="tool-button"
+            title="快捷键速查表"
+            aria-haspopup="dialog"
+            aria-expanded={showHelp}
+            onClick={() => setShowHelp(true)}
+          >
+            {t('app.help')}
+          </button>
+          <button
+            type="button"
+            className={`tool-button${showSettings ? ' tool-button--active' : ''}`}
+            title="主题 / 语言 / 缓存上限"
+            aria-haspopup="dialog"
+            aria-expanded={showSettings}
+            onClick={() => setShowSettings((prev) => !prev)}
+          >
+            {t('app.settings')}
+          </button>
+        </header>
+
+        {loadState.status === 'error' && (
+          <div role="alert" className="error-banner">
+            <span>无法打开文件：{loadState.message}</span>
+            <button type="button" onClick={() => setLoadState({ status: 'idle' })}>
+              关闭
+            </button>
+          </div>
+        )}
+        {loadState.status !== 'error' && failures.length > 0 && (
+          <ErrorReportPanel failures={failures} />
+        )}
+
+        <main className="workspace">
+          {patientTree.length > 0 && (
+            <aside className="series-panel" aria-label="序列面板">
+              <SeriesPanel
+                patients={patientTree}
+                activeUid={assignments[activeViewportId] ?? null}
+                onLoadSeries={loadSeriesToViewport}
+                onCloseSeries={closeSeries}
+                thumbnails={thumbnails}
+              />
+              <button type="button" className="tool-button clear-all-button" onClick={clearAll}>
+                清空全部
+              </button>
+            </aside>
+          )}
+
+          <div className="viewer-grid-wrap">
+            <div
+              className="viewer-grid"
+              style={{
+                gridTemplateColumns: `repeat(${layoutConfig.columns}, minmax(0, 1fr))`,
+                gridTemplateRows: `repeat(${Math.ceil(layoutConfig.cells / layoutConfig.columns)}, minmax(0, 1fr))`,
+              }}
+            >
+              {ALL_VIEWPORT_IDS.slice(0, layoutConfig.cells).map((id) => {
+                const stack = stackByUid.get(assignments[id] ?? '') ?? null;
+                return (
+                  <ViewerCell
+                    key={id}
+                    viewportId={id}
+                    items={stack?.items ?? EMPTY_ITEMS}
+                    defaultWwWl={getDefaultWwWl(stack)}
+                    showInfo={showInfo}
+                    isActive={id === activeViewportId}
+                    badgeLabel={
+                      stack === null
+                        ? null
+                        : `${stack.modality}${stack.description ? ` · ${stack.description}` : ''}`
+                    }
+                    onActivate={setActiveViewportId}
+                    registerApi={registerApi}
+                    onUiChange={handleUiChange}
+                    onDropSeries={loadSeriesTo}
+                  />
+                );
+              })}
+            </div>
+
+            {loadState.status === 'loading' &&
+              (loadState.total >= PROGRESS_BAR_MIN_FILES ? (
+                <div className="load-progress" role="status" aria-live="polite">
+                  <div className="load-progress-text">
+                    正在解析 {loadState.done} / {loadState.total} 个文件…
+                  </div>
+                  <div
+                    className="load-progress-bar"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={loadState.total}
+                    aria-valuenow={loadState.done}
+                    aria-label="解析进度"
+                  >
+                    <div
+                      className="load-progress-bar-fill"
+                      style={{
+                        width: `${Math.round((loadState.done / Math.max(1, loadState.total)) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <button type="button" className="tool-button" onClick={cancelLoading}>
+                    取消
+                  </button>
+                </div>
+              ) : (
+                <div className="empty-hint">
+                  正在解析 {loadState.done} / {loadState.total} 个文件…
+                </div>
+              ))}
+            {(loadState.status === 'idle' ||
+              (loadState.status === 'error' && seriesList.length === 0)) && (
+              <div className="empty-hint">
+                {t('app.emptyHint1')}
+                <br />
+                {t('app.emptyHint2')}
+              </div>
+            )}
+            {dragActive && <div className="drop-overlay">松开以打开文件</div>}
+          </div>
+        </main>
+
+        {toast !== null && (
+          <div role="status" className="toast">
+            {toast}
+          </div>
+        )}
+
+        <HelpOverlay open={showHelp} onClose={() => setShowHelp(false)} />
+        {showSettings && (
+          <SettingsPanel
+            settings={settings}
+            onChange={updateSettings}
+            onClose={() => setShowSettings(false)}
+          />
+        )}
+
+        <footer className="statusbar">
+          {activeStack !== null
+            ? `${activeViewportId} · ${activeStack.modality} · ${activeStack.items.length} 层 · 全部 ${totalInstances} 个实例`
+            : '未加载数据'}
+          {failures.length > 0 ? ` · ${failures.length} 个失败` : ''}
+        </footer>
+      </div>
+    </I18nContext.Provider>
   );
 }

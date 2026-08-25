@@ -1,0 +1,28 @@
+{
+  "name": "DICOM 查看器",
+  "short_name": "DICOM 查看器",
+  "description": "浏览器端 DICOM 查看器：本地打开 DICOM 文件/文件夹，数据不出浏览器",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#101418",
+  "theme_color": "#101418",
+  "lang": "zh-CN",
+  "categories": ["medical", "utilities"],
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
