@@ -540,10 +540,6 @@ export default function App() {
         >
           信息
         </button>
-
-        <span className="toolbar-hint">
-          多选/拖拽打开 · 滚轮翻页 · Ctrl+滚轮缩放 · 中键平移 · 点击序列载入激活视口
-        </span>
       </header>
 
       {loadState.status === 'error' && (
