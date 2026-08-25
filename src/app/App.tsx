@@ -10,7 +10,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   openDicomFiles,
   type LoadFailure,
+  type OpenedDicomFile,
 } from '../features/loading/openDicomFiles';
+import { dedupeBySopUid } from '../features/series/dedupe';
 import {
   scanDroppedItems,
   scanDirectoryHandle,
@@ -129,6 +131,15 @@ export default function App() {
 
   // ── 文件打开 ────────────────────────────────────────
   const abortRef = useRef<AbortController | null>(null);
+  /** 跨批次累积的已解析实例（FR-1.11 去重后追加） */
+  const openedFilesRef = useRef<OpenedDicomFile[]>([]);
+  /** 已加载的 SOPInstanceUID 集合（跨批次去重依据） */
+  const knownUidsRef = useRef<Set<string>>(new Set());
+  /** assignments 镜像：供异步流程读取最新指派状态而不重建回调 */
+  const assignmentsRef = useRef(assignments);
+  useEffect(() => {
+    assignmentsRef.current = assignments;
+  }, [assignments]);
 
   const handleFiles = useCallback(async (inputs: readonly (ScannedFile | File)[]) => {
     if (inputs.length === 0) {
@@ -147,39 +158,45 @@ export default function App() {
           }
         },
       });
-      const stacks = buildSeriesStacks(opened);
+      // FR-1.11 去重：SOPInstanceUID 已存在（历史批次或本批次内）则跳过
+      const deduped = dedupeBySopUid(opened, knownUidsRef.current);
+      knownUidsRef.current = deduped.nextUids;
+      openedFilesRef.current = [...openedFilesRef.current, ...deduped.kept];
+      const stacks = buildSeriesStacks(openedFilesRef.current);
       setSeriesList(stacks);
       setFailures(failed);
-      if (cancelled) {
-        if (stacks.length > 0) {
-          const firstUid = stacks[0]?.seriesUid ?? null;
-          setAssignments(
-            Object.fromEntries(
-              ALL_VIEWPORT_IDS.map((id) => [id, id === 'vp-0' ? firstUid : null]),
-            ),
-          );
-          setActiveViewportId('vp-0');
-          setLoadState({ status: 'loaded' });
-          showToast(`已取消：保留已解析的 ${opened.length} 个文件`);
-        } else {
-          setLoadState({ status: 'idle' });
+      if (deduped.duplicateCount > 0) {
+        showToast(`已跳过 ${deduped.duplicateCount} 个重复文件`);
+      }
+      if (stacks.length === 0) {
+        setLoadState(
+          cancelled
+            ? { status: 'idle' }
+            : {
+                status: 'error',
+                message: failed[0]?.message ?? '没有可显示的 DICOM 文件',
+              },
+        );
+        if (cancelled) {
           showToast('已取消打开');
         }
         return;
       }
-      if (stacks.length === 0) {
-        setLoadState({
-          status: 'error',
-          message: failed[0]?.message ?? '没有可显示的 DICOM 文件',
-        });
-        return;
+      // 仅当当前没有任何视口加载数据时自动指派首个序列（累积加载不打断已有视图）
+      const anyLoaded = Object.values(assignmentsRef.current).some((uid) => uid !== null);
+      if (!anyLoaded || cancelled) {
+        const firstUid = stacks[0]?.seriesUid ?? null;
+        setAssignments(
+          Object.fromEntries(
+            ALL_VIEWPORT_IDS.map((id) => [id, id === 'vp-0' ? firstUid : null]),
+          ),
+        );
+        setActiveViewportId('vp-0');
       }
-      const firstUid = stacks[0]?.seriesUid ?? null;
-      setAssignments(
-        Object.fromEntries(ALL_VIEWPORT_IDS.map((id) => [id, id === 'vp-0' ? firstUid : null])),
-      );
-      setActiveViewportId('vp-0');
       setLoadState({ status: 'loaded' });
+      if (cancelled) {
+        showToast(`已取消：保留已解析的 ${opened.length} 个文件`);
+      }
     } catch (error) {
       console.error('[App] 打开文件失败', error);
       setLoadState({
