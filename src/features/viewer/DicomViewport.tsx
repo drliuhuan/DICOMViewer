@@ -21,12 +21,17 @@ import { voiRangeFromWwWl } from './wwPresets';
 const RENDERING_ENGINE_ID = 'dicom-viewer-m1-engine';
 export const STACK_VIEWPORT_ID = 'dicom-viewer-vp-0';
 
+/** 缩放下限（parallelScale 最小值，世界 mm），防止过度放大后除零/翻转 */
+const MIN_PARALLEL_SCALE = 1e-3;
+
 /** 视口当前 UI 状态快照（供工具栏输入框/按钮同步显示） */
 export interface ViewportUiState {
   sliceIndex: number;
   sliceCount: number;
   ww: number;
   wl: number;
+  /** 相对适应窗口基线的缩放比例（1 ≈ 适应窗口） */
+  zoom: number;
 }
 
 /** 命令式视口操作接口（工具栏/快捷键入口） */
@@ -38,6 +43,14 @@ export interface ViewportApi {
   applyWwWl: (ww: number, wl: number) => void;
   /** 恢复默认窗宽窗位（FR-3.4） */
   resetWindowLevel: () => void;
+  /** 缩放一步：factor > 1 放大，< 1 缩小（FR-3.5） */
+  zoomStep: (factor: number) => void;
+  /** 1:1 原始像素显示（FR-3.5） */
+  oneToOne: () => void;
+  /** 适应窗口（FR-3.4 双击 / FR-11 F 键） */
+  fitToWindow: () => void;
+  /** 全局视图重置：WW/WL + 缩放 + 平移（FR-3.11，Shift+R） */
+  resetView: () => void;
 }
 
 interface DicomViewportProps {
@@ -84,6 +97,7 @@ export function DicomViewport({
     sliceCount: 0,
     ww: 0,
     wl: 0,
+    zoom: 1,
   });
 
   // 默认窗宽窗位变化时保持 ref 同步（供 API 回调读取最新值）
@@ -159,6 +173,59 @@ export function DicomViewport({
           vp.setProperties({ voiRange: voiRangeFromWwWl(fallback.ww, fallback.wl) });
           vp.render();
         },
+        zoomStep: (factor) => {
+          const vp = viewportRef.current;
+          if (!vp || !Number.isFinite(factor) || factor <= 0) {
+            return;
+          }
+          const parallelScale = vp.getCamera().parallelScale;
+          if (typeof parallelScale !== 'number' || !Number.isFinite(parallelScale)) {
+            return;
+          }
+          vp.setCamera({
+            parallelScale: Math.max(parallelScale / factor, MIN_PARALLEL_SCALE),
+          });
+          vp.render();
+        },
+        oneToOne: () => {
+          const vp = viewportRef.current;
+          if (!vp) {
+            return;
+          }
+          // 1:1：屏幕一个 CSS 像素对应一个图像像素。
+          // 平行投影下 parallelScale（世界 mm）= 视口高 px × 行间距 mm / 2
+          const imageData = vp.getImageData();
+          if (!imageData) {
+            return;
+          }
+          const spacingY = imageData.spacing[1] ?? 1;
+          const clientHeight = vp.element?.clientHeight ?? 0;
+          if (clientHeight <= 0) {
+            return;
+          }
+          const desired = (clientHeight * spacingY) / 2;
+          vp.setCamera({
+            parallelScale: Math.max(desired, MIN_PARALLEL_SCALE),
+          });
+          vp.render();
+        },
+        fitToWindow: () => {
+          const vp = viewportRef.current;
+          vp?.resetCamera({ resetPan: true, resetZoom: true });
+          vp?.render();
+        },
+        resetView: () => {
+          const vp = viewportRef.current;
+          if (!vp) {
+            return;
+          }
+          const fallback = defaultWwWlRef.current;
+          if (fallback) {
+            vp.setProperties({ voiRange: voiRangeFromWwWl(fallback.ww, fallback.wl) });
+          }
+          vp.resetCamera({ resetPan: true, resetZoom: true });
+          vp.render();
+        },
       });
     });
 
@@ -201,6 +268,7 @@ export function DicomViewport({
         publishUi({
           sliceCount: imageIds.length,
           sliceIndex: viewport.getCurrentImageIdIndex(),
+          zoom: 1,
           ...voiToWwWl(viewport.getProperties().voiRange),
         });
       } catch (error) {
@@ -217,7 +285,8 @@ export function DicomViewport({
     };
   }, [imageIds, publishUi]);
 
-  // 视口事件订阅：翻页滚动 → 层号；VOI 变化 → WW/WL
+  // 视口事件订阅：翻页滚动 → 层号；VOI 变化 → WW/WL；相机变化 → 缩放比例；
+  // 双击 → 适应窗口（FR-3.4/FR-14.1 桌面语义）
   useEffect(() => {
     const element = containerRef.current;
     if (!element) {
@@ -235,11 +304,29 @@ export function DicomViewport({
       }
       publishUi(voiToWwWl(detail.range));
     };
+    const syncZoom = () => {
+      const vp = viewportRef.current;
+      if (vp) {
+        publishUi({ zoom: Math.round(vp.getZoom() * 100) / 100 });
+      }
+    };
+    const onDoubleClick = () => {
+      const vp = viewportRef.current;
+      if (vp) {
+        vp.resetCamera({ resetPan: true, resetZoom: true });
+        vp.render();
+        syncZoom();
+      }
+    };
     element.addEventListener(Enums.Events.STACK_VIEWPORT_SCROLL, onScroll);
     element.addEventListener(Enums.Events.VOI_MODIFIED, onVoiModified);
+    element.addEventListener(Enums.Events.CAMERA_MODIFIED, syncZoom);
+    element.addEventListener('dblclick', onDoubleClick);
     return () => {
       element.removeEventListener(Enums.Events.STACK_VIEWPORT_SCROLL, onScroll);
       element.removeEventListener(Enums.Events.VOI_MODIFIED, onVoiModified);
+      element.removeEventListener(Enums.Events.CAMERA_MODIFIED, syncZoom);
+      element.removeEventListener('dblclick', onDoubleClick);
     };
   }, [publishUi]);
 

@@ -20,6 +20,10 @@ import {
   findPresetById,
   getDefaultWwWlForModality,
 } from '../features/viewer/wwPresets';
+import {
+  isTextInputTarget,
+  resolveShortcut,
+} from '../features/shortcuts/shortcuts';
 
 type LoadState =
   | { status: 'idle' }
@@ -27,7 +31,13 @@ type LoadState =
   | { status: 'loaded' }
   | { status: 'error'; message: string };
 
-const EMPTY_UI: ViewportUiState = { sliceIndex: 0, sliceCount: 0, ww: 0, wl: 0 };
+const EMPTY_UI: ViewportUiState = {
+  sliceIndex: 0,
+  sliceCount: 0,
+  ww: 0,
+  wl: 0,
+  zoom: 1,
+};
 
 export default function App() {
   const [loadState, setLoadState] = useState<LoadState>({ status: 'idle' });
@@ -41,6 +51,8 @@ export default function App() {
   /** WW/WL 输入框草稿（允许清空/中间态，失焦或回车时提交） */
   const [wwDraft, setWwDraft] = useState('');
   const [wlDraft, setWlDraft] = useState('');
+  /** 信息覆盖文字全局开关（FR-4.1，I 键 / 工具栏按钮） */
+  const [showInfo, setShowInfo] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -188,6 +200,64 @@ export default function App() {
     });
   }, [activeStack]);
 
+  /** 全局视图重置（FR-3.11：WW/WL + 缩放 + 平移，Shift+R / 工具栏按钮） */
+  const resetAllViews = useCallback(() => {
+    apiRef.current?.resetView();
+  }, []);
+
+  // 全局快捷键（FR-11 子集）；文本输入框聚焦时不触发
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isTextInputTarget(event.target)) {
+        return;
+      }
+      const action = resolveShortcut(event);
+      if (action === null) {
+        return;
+      }
+      event.preventDefault();
+      const api = apiRef.current;
+      switch (action.type) {
+        case 'toggleInfo':
+          setShowInfo((prev) => !prev);
+          break;
+        case 'tool':
+          activateTool(ToolNames[action.tool]);
+          break;
+        case 'placeholderMeasurement':
+          showToast('该测量工具在 M3 提供');
+          break;
+        case 'fit':
+          api?.fitToWindow();
+          break;
+        case 'zoomIn':
+          api?.zoomStep(1.25);
+          break;
+        case 'zoomOut':
+          api?.zoomStep(0.8);
+          break;
+        case 'layout':
+          // 布局快捷键在 feat(layout) 提交接入多视口后生效
+          break;
+        case 'slicePrev':
+          api?.scrollSlice(-1);
+          break;
+        case 'sliceNext':
+          api?.scrollSlice(1);
+          break;
+        case 'resetAll':
+          resetAllViews();
+          break;
+        case 'cancelTool':
+          setPrimaryTool(ToolNames.windowLevel);
+          api?.setPrimaryTool(ToolNames.windowLevel);
+          break;
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activateTool, resetAllViews, showToast]);
+
   const totalFiles = seriesList.reduce((sum, s) => sum + s.items.length, 0);
   const hasStack = ui.sliceCount > 0;
 
@@ -317,6 +387,51 @@ export default function App() {
         )}
 
         {hasStack && (
+          <div className="toolbar-group" aria-label="视图">
+            <button
+              type="button"
+              className="tool-button"
+              title="放大（+）"
+              onClick={() => apiRef.current?.zoomStep(1.25)}
+            >
+              ＋
+            </button>
+            <button
+              type="button"
+              className="tool-button"
+              title="缩小（−）"
+              onClick={() => apiRef.current?.zoomStep(0.8)}
+            >
+              －
+            </button>
+            <button
+              type="button"
+              className="tool-button"
+              title="1:1 原始像素显示"
+              onClick={() => apiRef.current?.oneToOne()}
+            >
+              1:1
+            </button>
+            <button
+              type="button"
+              className="tool-button"
+              title="适应窗口（F / 双击视口）"
+              onClick={() => apiRef.current?.fitToWindow()}
+            >
+              适应窗口
+            </button>
+            <button
+              type="button"
+              className="tool-button"
+              title="全局重置：窗宽窗位+缩放+平移（Shift+R）"
+              onClick={resetAllViews}
+            >
+              重置视图
+            </button>
+          </div>
+        )}
+
+        {hasStack && (
           <div className="toolbar-group" aria-label="翻页">
             <button
               type="button"
@@ -341,6 +456,15 @@ export default function App() {
             </button>
           </div>
         )}
+
+        <button
+          type="button"
+          className={`tool-button${showInfo ? ' tool-button--active' : ''}`}
+          title="信息覆盖文字开关（I）"
+          onClick={() => setShowInfo((prev) => !prev)}
+        >
+          信息
+        </button>
 
         <span className="toolbar-hint">
           多选/拖拽打开 · 滚轮翻页 · Ctrl+滚轮缩放 · 中键平移
