@@ -39,9 +39,12 @@ import {
 
 type LoadState =
   | { status: 'idle' }
-  | { status: 'loading'; count: number }
+  | { status: 'loading'; done: number; total: number }
   | { status: 'loaded' }
   | { status: 'error'; message: string };
+
+/** 文件数达到该阈值才展示进度条与取消按钮（FR-1.6），小批量直接加载 */
+const PROGRESS_BAR_MIN_FILES = 20;
 
 type LayoutKey = '1x1' | '1x2' | '2x2';
 
@@ -125,16 +128,45 @@ export default function App() {
   const hasStack = activeUi.sliceCount > 0;
 
   // ── 文件打开 ────────────────────────────────────────
+  const abortRef = useRef<AbortController | null>(null);
+
   const handleFiles = useCallback(async (inputs: readonly (ScannedFile | File)[]) => {
     if (inputs.length === 0) {
       return;
     }
-    setLoadState({ status: 'loading', count: inputs.length });
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setLoadState({ status: 'loading', done: 0, total: inputs.length });
     try {
-      const { opened, failures: failed } = await openDicomFiles(inputs);
+      const { opened, failures: failed, cancelled } = await openDicomFiles(inputs, {
+        signal: controller.signal,
+        onProgress: (done, total) => {
+          // 仅最新一次打开操作有权更新进度（防止快速连续打开时旧任务回写）
+          if (abortRef.current === controller) {
+            setLoadState({ status: 'loading', done, total });
+          }
+        },
+      });
       const stacks = buildSeriesStacks(opened);
       setSeriesList(stacks);
       setFailures(failed);
+      if (cancelled) {
+        if (stacks.length > 0) {
+          const firstUid = stacks[0]?.seriesUid ?? null;
+          setAssignments(
+            Object.fromEntries(
+              ALL_VIEWPORT_IDS.map((id) => [id, id === 'vp-0' ? firstUid : null]),
+            ),
+          );
+          setActiveViewportId('vp-0');
+          setLoadState({ status: 'loaded' });
+          showToast(`已取消：保留已解析的 ${opened.length} 个文件`);
+        } else {
+          setLoadState({ status: 'idle' });
+          showToast('已取消打开');
+        }
+        return;
+      }
       if (stacks.length === 0) {
         setLoadState({
           status: 'error',
@@ -154,7 +186,16 @@ export default function App() {
         status: 'error',
         message: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+      }
     }
+  }, [showToast]);
+
+  /** 取消当前解析：保留已完成的文件，丢弃未开始的（FR-1.6） */
+  const cancelLoading = useCallback(() => {
+    abortRef.current?.abort();
   }, []);
 
   /** 「打开文件夹」：Chromium 走 File System Access API，其余浏览器走 webkitdirectory 输入框 */
@@ -707,9 +748,36 @@ export default function App() {
             })}
           </div>
 
-          {loadState.status === 'loading' && (
-            <div className="empty-hint">正在解析 {loadState.count} 个文件…</div>
-          )}
+          {loadState.status === 'loading' &&
+            (loadState.total >= PROGRESS_BAR_MIN_FILES ? (
+              <div className="load-progress" role="status" aria-live="polite">
+                <div className="load-progress-text">
+                  正在解析 {loadState.done} / {loadState.total} 个文件…
+                </div>
+                <div
+                  className="load-progress-bar"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={loadState.total}
+                  aria-valuenow={loadState.done}
+                  aria-label="解析进度"
+                >
+                  <div
+                    className="load-progress-bar-fill"
+                    style={{
+                      width: `${Math.round((loadState.done / Math.max(1, loadState.total)) * 100)}%`,
+                    }}
+                  />
+                </div>
+                <button type="button" className="tool-button" onClick={cancelLoading}>
+                  取消
+                </button>
+              </div>
+            ) : (
+              <div className="empty-hint">
+                正在解析 {loadState.done} / {loadState.total} 个文件…
+              </div>
+            ))}
           {(loadState.status === 'idle' ||
             (loadState.status === 'error' && seriesList.length === 0)) && (
             <div className="empty-hint">

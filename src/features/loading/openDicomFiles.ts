@@ -44,6 +44,18 @@ export interface LoadFailure {
 export interface OpenFilesResult {
   opened: OpenedDicomFile[];
   failures: LoadFailure[];
+  /** 因取消而中止：opened 为中止时已完成的文件，未开始的文件被丢弃 */
+  cancelled: boolean;
+}
+
+/** 批量打开选项（FR-1.6 进度与取消） */
+export interface OpenFilesOptions {
+  /** 每完成一个文件回调一次；done = 已处理数（成功+失败），total = 总输入数 */
+  onProgress?: (done: number, total: number) => void;
+  /** 中止信号：abort 后停止解析，保留已完成文件 */
+  signal?: AbortSignal;
+  /** 每处理多少个文件让出主线程一次（避免 UI 冻结），默认 50 */
+  yieldEvery?: number;
 }
 
 /** 兼容两种输入：普通 File 或带相对路径的扫描结果 */
@@ -86,12 +98,27 @@ async function openOne(scanned: ScannedFile): Promise<OpenedDicomFile> {
  * 单个文件失败不会中断整批：
  * - 命中扩展名黑名单或缺少 DICM 魔数 → kind='not-dicom'（FR-1.4 可预期跳过）；
  * - 内容截断等解析异常 → kind='parse-error'（FR-1.5 坏文件）。
+ *
+ * FR-1.6：每处理 yieldEvery 个文件让出主线程一次；onProgress 逐文件上报；
+ * signal 中止后立即返回（cancelled=true），已解析完成的文件保留在 opened 中。
  */
-export async function openDicomFiles(inputs: readonly OpenInput[]): Promise<OpenFilesResult> {
+export async function openDicomFiles(
+  inputs: readonly OpenInput[],
+  options: OpenFilesOptions = {},
+): Promise<OpenFilesResult> {
   const scanned = normalizeInputs(inputs);
+  const { onProgress, signal, yieldEvery = 50 } = options;
+  const total = scanned.length;
   const opened: OpenedDicomFile[] = [];
   const failures: LoadFailure[] = [];
-  for (const item of scanned) {
+  let cancelled = false;
+
+  for (let index = 0; index < total; index++) {
+    if (signal?.aborted) {
+      cancelled = true;
+      break;
+    }
+    const item = scanned[index] as ScannedFile;
     const displayName =
       item.relativePath && item.relativePath !== item.file.name
         ? item.relativePath
@@ -107,9 +134,15 @@ export async function openDicomFiles(inputs: readonly OpenInput[]): Promise<Open
           message: ext ? `非 DICOM 文件类型（.${ext.toLowerCase()}）` : '非 DICOM 文件类型',
           kind: 'not-dicom',
         });
-        continue;
+      } else {
+        const openedFile = await openOne(item);
+        // 解析期间被取消：该文件不计入结果（仅保留取消时刻前已完成的文件）
+        if (signal?.aborted) {
+          cancelled = true;
+          break;
+        }
+        opened.push(openedFile);
       }
-      opened.push(await openOne(item));
     } catch (error) {
       console.error(`[openDicomFiles] 打开文件失败: ${displayName}`, error);
       // 有魔数但内容损坏（ParseFailureError）或其它异常 → 坏文件；缺魔数等 → 非 DICOM
@@ -121,6 +154,11 @@ export async function openDicomFiles(inputs: readonly OpenInput[]): Promise<Open
         kind: isBadFile ? 'parse-error' : 'not-dicom',
       });
     }
+    onProgress?.(index + 1, total);
+    // 分批让出主线程，保持进度条等 UI 可响应（FR-1.6）
+    if ((index + 1) % yieldEvery === 0 && index + 1 < total) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
   }
-  return { opened, failures };
+  return { opened, failures, cancelled };
 }
