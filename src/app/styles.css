@@ -378,11 +378,10 @@ body {
   pointer-events: none;
 }
 
-/* ── 信息覆盖文字（左上角，M0 最小版） ──── */
+/* ── 信息覆盖文字（四角 + 方向标记，FR-4） ── */
 .info-overlay {
   position: absolute;
-  top: 10px;
-  left: 12px;
+  inset: 0;
   z-index: 10;
   pointer-events: none;
   font-size: 13px;
@@ -395,6 +394,60 @@ body {
   text-shadow:
     0 1px 2px rgba(0, 0, 0, 0.9),
     0 0 4px rgba(0, 0, 0, 0.7);
+}
+
+.info-corner {
+  position: absolute;
+  max-width: 42%;
+}
+
+.info-topleft {
+  top: 10px;
+  left: 12px;
+}
+
+.info-topright {
+  top: 10px;
+  right: 12px;
+  text-align: right;
+}
+
+.info-bottomleft {
+  bottom: 40px;
+  left: 12px;
+}
+
+.info-bottomright {
+  bottom: 40px;
+  right: 12px;
+  text-align: right;
+}
+
+.orient-label {
+  position: absolute;
+  font-weight: 700;
+  color: #9fd0ff;
+  transform: translate(-50%, -50%);
+}
+
+.orient-top {
+  top: 8px;
+  left: 50%;
+}
+
+.orient-bottom {
+  top: calc(100% - 8px);
+  left: 50%;
+}
+
+.orient-left {
+  top: 50%;
+  left: 12px;
+}
+
+.orient-right {
+  top: 50%;
+  left: calc(100% - 12px);
 }
 
 /* ── 状态栏 ─────────────────────────────── */

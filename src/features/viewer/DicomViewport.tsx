@@ -1,14 +1,23 @@
 /**
- * M1 视口组件：Cornerstone3D StackViewport + @cornerstonejs/tools 工具绑定。
+ * M1 视口组件：Cornerstone3D StackViewport + @cornerstonejs/tools 工具绑定
+ * + 信息覆盖文字与像素探针。
  *
  * - 挂载期创建共享渲染引擎上的视口与专属 ToolGroup（滚轮翻页/Ctrl+滚轮缩放/
  *   中键平移/左键窗宽窗位，见 toolSetup.ts）；
- * - 堆栈变化时 setStack 并同步层数状态；
- * - 订阅 STACK_VIEWPORT_SCROLL / VOI_MODIFIED 事件，驱动层滑块与 WW/WL 显示；
+ * - 堆栈变化时 setStack、应用默认窗宽窗位并同步层数状态；
+ * - 订阅 STACK_VIEWPORT_SCROLL / VOI_MODIFIED / CAMERA_MODIFIED 事件，
+ *   驱动层滑块、WW/WL 输入框与缩放比例显示；
+ * - 光标移动时采样像素值（经 Modality LUT 显示 HU，FR-4.5）；
  * - 通过 onApiReady 上报命令式操作接口，供工具栏与全局快捷键调用。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Enums, RenderingEngine, getRenderingEngine, utilities } from '@cornerstonejs/core';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Enums,
+  RenderingEngine,
+  cache,
+  getRenderingEngine,
+  utilities,
+} from '@cornerstonejs/core';
 import type { Types } from '@cornerstonejs/core';
 import {
   createBoundToolGroup,
@@ -17,6 +26,10 @@ import {
   syncToolBindings,
 } from './toolSetup';
 import { voiRangeFromWwWl } from './wwPresets';
+import { formatGrayValue, samplePixel } from '../../dicom/pixelProbe';
+import type { PixelProbe } from './probeTypes';
+import type { StackItem } from '../series/buildStacks';
+import { InfoOverlay } from '../../ui/components/InfoOverlay';
 
 const RENDERING_ENGINE_ID = 'dicom-viewer-m1-engine';
 export const STACK_VIEWPORT_ID = 'dicom-viewer-vp-0';
@@ -54,13 +67,14 @@ export interface ViewportApi {
 }
 
 interface DicomViewportProps {
-  /** 待显示的 imageId 列表（堆栈）；空数组表示空态 */
-  imageIds: string[];
-  /** 该堆栈的默认窗宽窗位（文件自带值优先，其次模态预设） */
+  /** 待显示堆栈条目（imageId + 元数据）；空数组表示空态 */
+  items: StackItem[];
   defaultWwWl?: { ww: number; wl: number };
+  /** 信息覆盖文字是否可见（FR-4.1） */
+  showInfo: boolean;
   /** 视口就绪后上报命令式 API（仅首次） */
   onApiReady?: (api: ViewportApi) => void;
-  /** UI 状态变化回调（层号 / 窗宽窗位） */
+  /** UI 状态变化回调（层号 / 窗宽窗位 / 缩放） */
   onUiChange?: (ui: ViewportUiState) => void;
 }
 
@@ -83,15 +97,19 @@ function voiToWwWl(range: Types.VOIRange | undefined): { ww: number; wl: number 
 }
 
 export function DicomViewport({
-  imageIds,
+  items,
   defaultWwWl,
+  showInfo,
   onApiReady,
   onUiChange,
 }: DicomViewportProps) {
+  const imageIds = useMemo(() => items.map((item) => item.imageId), [items]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<Types.IStackViewport | null>(null);
   const defaultWwWlRef = useRef<{ ww: number; wl: number } | undefined>(defaultWwWl);
+  const probeRafRef = useRef(0);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [probe, setProbe] = useState<PixelProbe | null>(null);
   const [uiState, setUiState] = useState<ViewportUiState>({
     sliceIndex: 0,
     sliceCount: 0,
@@ -240,10 +258,11 @@ export function DicomViewport({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 堆栈变化时加载并渲染；同步层数与初始 WW/WL
+  // 堆栈变化时加载并渲染；应用默认 WW/WL；同步层数状态
   useEffect(() => {
     if (imageIds.length === 0) {
       setRenderError(null);
+      setProbe(null);
       publishUi({ sliceIndex: 0, sliceCount: 0 });
       return undefined;
     }
@@ -330,6 +349,105 @@ export function DicomViewport({
     };
   }, [publishUi]);
 
+  // 像素探针（FR-4.5）：光标 → 图像索引 → 原始像素 → Modality LUT
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) {
+      return undefined;
+    }
+
+    const sampleAt = (clientX: number, clientY: number) => {
+      const vp = viewportRef.current;
+      if (!vp) {
+        return;
+      }
+      try {
+        const rect = vp.element.getBoundingClientRect();
+        const canvasX = clientX - rect.left;
+        const canvasY = clientY - rect.top;
+        const worldPos = vp.canvasToWorld([canvasX, canvasY]);
+        if (!worldPos) {
+          setProbe(null);
+          return;
+        }
+        const imageData = vp.getImageData();
+        if (!imageData) {
+          setProbe(null);
+          return;
+        }
+        const index = utilities.transformWorldToIndex(imageData, worldPos);
+        const width = imageData.dimensions[0] ?? 0;
+        const height = imageData.dimensions[1] ?? 0;
+        const x = index[0] ?? Number.NaN;
+        const y = index[1] ?? Number.NaN;
+        if (
+          !Number.isInteger(x) ||
+          !Number.isInteger(y) ||
+          x < 0 ||
+          y < 0 ||
+          x >= width ||
+          y >= height
+        ) {
+          setProbe(null);
+          return;
+        }
+        const currentImageId = vp.getCurrentImageId();
+        const image = cache.getImage(currentImageId);
+        if (!image) {
+          setProbe({ imageX: x, imageY: y, valueText: null });
+          return;
+        }
+        const components = image.color ? 3 : 1;
+        const sampled = samplePixel(
+          image.getPixelData(),
+          image.width,
+          x,
+          y,
+          components,
+        );
+        setProbe({
+          imageX: x,
+          imageY: y,
+          valueText:
+            sampled !== null
+              ? formatGrayValue(sampled, imageData.metadata.Modality ?? '', image.slope, image.intercept)
+              : null,
+        });
+      } catch {
+        // 渲染器尚未就绪等瞬态错误：静默清除读数
+        setProbe(null);
+      }
+    };
+
+    const onMouseMove = (event: MouseEvent) => {
+      if (probeRafRef.current !== 0) {
+        return;
+      }
+      probeRafRef.current = requestAnimationFrame(() => {
+        probeRafRef.current = 0;
+        sampleAt(event.clientX, event.clientY);
+      });
+    };
+    const onMouseLeave = () => {
+      if (probeRafRef.current !== 0) {
+        cancelAnimationFrame(probeRafRef.current);
+        probeRafRef.current = 0;
+      }
+      setProbe(null);
+    };
+
+    element.addEventListener('mousemove', onMouseMove);
+    element.addEventListener('mouseleave', onMouseLeave);
+    return () => {
+      element.removeEventListener('mousemove', onMouseMove);
+      element.removeEventListener('mouseleave', onMouseLeave);
+      if (probeRafRef.current !== 0) {
+        cancelAnimationFrame(probeRafRef.current);
+        probeRafRef.current = 0;
+      }
+    };
+  }, []);
+
   const handleSliderChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const index = Number(event.target.value);
     publishUi({ sliceIndex: index });
@@ -337,6 +455,8 @@ export function DicomViewport({
   };
 
   const canSlide = uiState.sliceCount > 1;
+  const currentItem =
+    items.length > 0 ? (items[Math.min(uiState.sliceIndex, items.length - 1)] ?? null) : null;
 
   return (
     <div className="viewport-container">
@@ -345,6 +465,16 @@ export function DicomViewport({
         <div role="alert" className="viewport-error">
           图像显示失败：{renderError}
         </div>
+      )}
+      {showInfo && currentItem !== null && renderError === null && (
+        <InfoOverlay
+          summary={currentItem.summary}
+          sliceLabel={`${uiState.sliceIndex + 1} / ${uiState.sliceCount}`}
+          ww={uiState.ww}
+          wl={uiState.wl}
+          zoomPercent={uiState.zoom * 100}
+          probe={probe}
+        />
       )}
       {canSlide && (
         <div className="slice-control">

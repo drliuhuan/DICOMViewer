@@ -131,10 +131,6 @@ export default function App() {
     () => seriesList.find((series) => series.seriesUid === activeSeriesUid) ?? null,
     [seriesList, activeSeriesUid],
   );
-  const activeImageIds = useMemo(
-    () => activeStack?.items.map((item) => item.imageId) ?? [],
-    [activeStack],
-  );
 
   /** 激活主拖动工具；测量类工具为 M3 占位 */
   const activateTool = useCallback(
@@ -517,11 +513,12 @@ export default function App() {
         )}
 
         <div className="viewport-area">
-          {(activeImageIds.length > 0 || loadState.status === 'loading') && (
+          {(activeStack !== null || loadState.status === 'loading') && (
             <>
               <DicomViewport
-                imageIds={activeImageIds}
+                items={activeStack?.items ?? []}
                 defaultWwWl={defaultWwWl}
+                showInfo={showInfo}
                 onApiReady={(api) => {
                   apiRef.current = api;
                 }}
