@@ -480,6 +480,36 @@ body {
   text-overflow: ellipsis;
 }
 
+/* ── 序列卡片关闭按钮（FR-2.9）────────────── */
+.series-item-close {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.series-item-close:hover {
+  background: rgba(255, 92, 92, 0.16);
+  color: var(--danger);
+}
+
+.clear-all-button {
+  margin-top: auto;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.clear-all-button:hover:not(:disabled) {
+  background: rgba(255, 92, 92, 0.12) !important;
+}
+
 /* ── 视口网格（FR-3.12：1×1 / 1×2 / 2×2）── */
 .viewer-grid-wrap {
   position: relative;

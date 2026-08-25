@@ -17,6 +17,8 @@ interface SeriesPanelProps {
   /** 当前激活视口已加载的序列 uid */
   activeUid: string | null;
   onLoadSeries: (seriesUid: string) => void;
+  /** 关闭单个序列并释放资源（FR-2.9）；未提供时不渲染关闭按钮 */
+  onCloseSeries?: (seriesUid: string) => void;
   /** 序列 uid → 缩略图 dataURL（M2-H；缺省显示占位图标） */
   thumbnails?: Readonly<Record<string, string>>;
 }
@@ -35,11 +37,13 @@ function SeriesCard({
   active,
   thumbnail,
   onLoadSeries,
+  onCloseSeries,
 }: {
   series: SeriesStack;
   active: boolean;
   thumbnail: string | undefined;
   onLoadSeries: (seriesUid: string) => void;
+  onCloseSeries?: (seriesUid: string) => void;
 }) {
   const handleDragStart = useCallback(
     (event: React.DragEvent<HTMLButtonElement>) => {
@@ -47,6 +51,13 @@ function SeriesCard({
       event.dataTransfer.effectAllowed = 'copy';
     },
     [series.seriesUid],
+  );
+  const handleClose = useCallback(
+    (event: React.MouseEvent) => {
+      event.stopPropagation();
+      onCloseSeries?.(series.seriesUid);
+    },
+    [onCloseSeries, series.seriesUid],
   );
   const firstSummary = series.items[0]?.summary;
   const matrix =
@@ -85,6 +96,17 @@ function SeriesCard({
             .join(' · ')}
         </span>
       </span>
+      {onCloseSeries && (
+        <span
+          role="button"
+          className="series-item-close"
+          aria-label={`关闭序列 ${series.description ?? ''}`}
+          title="关闭该序列并释放内存"
+          onClick={handleClose}
+        >
+          ×
+        </span>
+      )}
     </button>
   );
 }
@@ -93,6 +115,7 @@ export function SeriesPanel({
   patients,
   activeUid,
   onLoadSeries,
+  onCloseSeries,
   thumbnails,
 }: SeriesPanelProps) {
   const totalSeries = patients.reduce(
@@ -133,6 +156,7 @@ export function SeriesPanel({
                   active={series.seriesUid === activeUid}
                   thumbnail={thumbnails?.[series.seriesUid]}
                   onLoadSeries={onLoadSeries}
+                  onCloseSeries={onCloseSeries}
                 />
               ))}
             </div>

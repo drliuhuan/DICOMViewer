@@ -13,6 +13,7 @@ import {
   type OpenedDicomFile,
 } from '../features/loading/openDicomFiles';
 import { dedupeBySopUid } from '../features/series/dedupe';
+import { releaseAll, releaseSeries } from '../features/series/release';
 import {
   generateThumbnail,
   getThumbnail,
@@ -422,6 +423,56 @@ export default function App() {
     setAssignments((prev) => ({ ...prev, [viewportId]: seriesUid }));
   }, []);
 
+  /** 关闭单个序列：清空引用它的视口 + 释放图像缓存与内存缓冲（FR-2.9） */
+  const closeSeries = useCallback(
+    (seriesUid: string) => {
+      const stack = stackByUid.get(seriesUid);
+      if (!stack) {
+        return;
+      }
+      setAssignments((prev) =>
+        Object.fromEntries(
+          Object.entries(prev).map(([id, uid]) => [id, uid === seriesUid ? null : uid]),
+        ),
+      );
+      // 从累积数据中移除该序列的实例，并撤销其 SOPInstanceUID 去重标记（允许重新打开）
+      const removedFiles = openedFilesRef.current.filter(
+        (file) =>
+          (file.summary.seriesInstanceUid ?? `__file__:${file.fileName}`) === seriesUid,
+      );
+      openedFilesRef.current = openedFilesRef.current.filter(
+        (file) =>
+          (file.summary.seriesInstanceUid ?? `__file__:${file.fileName}`) !== seriesUid,
+      );
+      for (const file of removedFiles) {
+        if (file.summary.sopInstanceUid) {
+          knownUidsRef.current.delete(file.summary.sopInstanceUid);
+        }
+      }
+      setSeriesList((prev) => prev.filter((s) => s.seriesUid !== seriesUid));
+      void releaseSeries(stack).then(() => showToast('已关闭序列并释放内存'));
+    },
+    [showToast, stackByUid],
+  );
+
+  /** 清空全部数据集（FR-2.9）：二次确认后释放所有缓存与注册表 */
+  const clearAll = useCallback(() => {
+    if (!window.confirm('确定要清空所有已加载的数据吗？将释放全部图像缓存与内存。')) {
+      return;
+    }
+    setAssignments(
+      Object.fromEntries(ALL_VIEWPORT_IDS.map((id) => [id, null])),
+    );
+    openedFilesRef.current = [];
+    knownUidsRef.current = new Set();
+    setSeriesList([]);
+    setFailures([]);
+    setUiMap({});
+    setThumbnails({});
+    setLoadState({ status: 'idle' });
+    void releaseAll(seriesList).then(() => showToast('已清空全部数据'));
+  }, [seriesList, showToast]);
+
   const loadSeriesToViewport = useCallback(
     (seriesUid: string) => {
       loadSeriesTo(activeViewportId, seriesUid);
@@ -753,8 +804,12 @@ export default function App() {
               patients={patientTree}
               activeUid={assignments[activeViewportId] ?? null}
               onLoadSeries={loadSeriesToViewport}
+              onCloseSeries={closeSeries}
               thumbnails={thumbnails}
             />
+            <button type="button" className="tool-button clear-all-button" onClick={clearAll}>
+              清空全部
+            </button>
           </aside>
         )}
 

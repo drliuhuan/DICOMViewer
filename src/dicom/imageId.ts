@@ -65,6 +65,29 @@ export function getBufferForImageId(imageId: string): ArrayBuffer {
   return buffer;
 }
 
+/** 剥离 imageId 的查询参数（如 ?frame=N），得到 base imageId */
+export function baseImageIdOf(imageId: string): string {
+  const queryIndex = imageId.indexOf('?');
+  return queryIndex === -1 ? imageId : imageId.slice(0, queryIndex);
+}
+
+/**
+ * 释放注册表 key 对应的缓冲区与元数据登记标记（FR-2.9）。
+ * @param key 注册表 key（base imageId 中 `dcm-file://` 之后的部分）
+ * @returns 是否实际删除了条目
+ */
+export function releaseDcmFileKey(key: string): boolean {
+  const deleted = bufferRegistry.delete(key);
+  registeredBaseImageIds.delete(`${IMAGE_ID_PREFIX}${key}`);
+  return deleted;
+}
+
+/** 清空全部缓冲区与元数据登记标记（FR-2.9 清空所有数据时调用） */
+export function clearDcmFileRegistry(): void {
+  bufferRegistry.clear();
+  registeredBaseImageIds.clear();
+}
+
 /** 已完成 NATURALIZED 元数据登记的 base imageId 集合，避免逐帧重复解析 */
 const registeredBaseImageIds = new Set<string>();
 
