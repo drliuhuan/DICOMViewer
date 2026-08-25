@@ -10,10 +10,20 @@ export interface SyntheticDicomOptions {
   /** 帧数；缺省/1 为单帧文件。>1 时写入 NumberOfFrames 并逐帧编码像素 */
   numberOfFrames?: number;
   seriesInstanceUid?: string;
+  /** 检查实例 UID（0020,000D），M2-D 四级元数据测试用 */
+  studyInstanceUid?: string;
   instanceNumber?: number;
   sliceLocation?: number;
+  /** 图像位置患者（0020,0032），M2-G IPP 投影排序测试用 */
+  imagePositionPatient?: [number, number, number];
   pixelSpacing?: [number, number];
   imageOrientationPatient?: [number, number, number, number, number, number];
+  /**
+   * 增强型多帧逐帧位置：>1 帧时写入 Per-frame Functional Groups Sequence
+   * （5200,9230）→ Plane Position Sequence（0020,9113）→ ImagePositionPatient；
+   * 数组下标 = 帧号-1。M2-D/FR-1.8 测试用。
+   */
+  perFramePlanePositions?: Array<[number, number, number]>;
   windowWidth?: number;
   windowCenter?: number;
 }
@@ -49,6 +59,55 @@ function uint32Bytes(value: number): Uint8Array {
 /** 编码 IS/DS 数值字符串（含多值反斜杠分隔） */
 function numberStringBytes(values: number[]): Uint8Array {
   return padToEven(values.map((v) => String(v)).join('\\'), 0x20);
+}
+
+/** 编码显式长度 Item：FFFE,E000 + uint32 长度 + 内容 */
+function itemBytes(content: Uint8Array): Uint8Array {
+  const out = new Uint8Array(8 + content.length);
+  out[0] = 0xfe;
+  out[1] = 0xff;
+  out[2] = 0x00;
+  out[3] = 0xe0;
+  new DataView(out.buffer).setUint32(4, content.length, true);
+  out.set(content, 8);
+  return out;
+}
+
+/** 编码「ImagePositionPatient (0020,0032) DS」元素 */
+function imagePositionPatientBytes(position: [number, number, number]): Uint8Array {
+  const inner: number[] = [];
+  appendElement(inner, 0x0020, 0x0032, 'DS', numberStringBytes(position));
+  return new Uint8Array(inner);
+}
+
+/**
+ * 编码「单条目 Plane Position Sequence」（0020,9113）的元素字节：
+ *   SQ { Item { ImagePositionPatient } }
+ * 仅返回该 SQ 元素自身（含头），供外层 Item 包装。
+ */
+function planePositionSequenceBytes(position: [number, number, number]): Uint8Array {
+  const sq: number[] = [];
+  appendElement(sq, 0x0020, 0x9113, 'SQ', itemBytes(imagePositionPatientBytes(position)));
+  return new Uint8Array(sq);
+}
+
+/**
+ * 编码 Per-frame Functional Groups Sequence（5200,9230）的内容字节：
+ * 每帧一个 Item，内含一条目 Plane Position Sequence。
+ * 仅返回 items 的拼接字节（不含本序列的头），由 appendElement 统一加头。
+ */
+function perFrameFunctionalGroupsItems(
+  positions: Array<[number, number, number]>,
+): Uint8Array {
+  const chunks = positions.map((position) => itemBytes(planePositionSequenceBytes(position)));
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
 }
 
 function appendElement(
@@ -113,11 +172,23 @@ export function buildSyntheticDicom(options: SyntheticDicomOptions = {}): ArrayB
     padToEven('1.2.826.0.1.3680043.8.498.10002345987245', 0), // SOP Instance UID
   );
   appendElement(bytes, 0x0008, 0x0060, 'CS', padToEven(modality, 0x20)); // Modality
+  if (options.studyInstanceUid !== undefined) {
+    appendElement(bytes, 0x0020, 0x000d, 'UI', padToEven(options.studyInstanceUid, 0));
+  }
   if (options.seriesInstanceUid !== undefined) {
     appendElement(bytes, 0x0020, 0x000e, 'UI', padToEven(options.seriesInstanceUid, 0));
   }
   if (options.instanceNumber !== undefined) {
     appendElement(bytes, 0x0020, 0x0013, 'IS', numberStringBytes([options.instanceNumber]));
+  }
+  if (options.imagePositionPatient !== undefined) {
+    appendElement(
+      bytes,
+      0x0020,
+      0x0032,
+      'DS',
+      numberStringBytes([...options.imagePositionPatient]),
+    );
   }
   if (options.sliceLocation !== undefined) {
     appendElement(bytes, 0x0020, 0x1041, 'DS', numberStringBytes([options.sliceLocation]));
@@ -156,6 +227,18 @@ export function buildSyntheticDicom(options: SyntheticDicomOptions = {}): ArrayB
       pixelData[outOffset] = value & 0xff;
       pixelData[outOffset + 1] = (value >> 8) & 0xff;
     }
+  }
+  if (
+    options.perFramePlanePositions !== undefined &&
+    options.perFramePlanePositions.length > 0
+  ) {
+    appendElement(
+      bytes,
+      0x5200,
+      0x9230,
+      'SQ',
+      perFrameFunctionalGroupsItems(options.perFramePlanePositions),
+    );
   }
   appendElement(bytes, 0x7fe0, 0x0010, 'OW', pixelData);
 

@@ -30,6 +30,12 @@ export interface SeriesStack {
   modality: string;
   description: string | undefined;
   items: StackItem[];
+  /** ── 四级元数据层级（FR-1.10）：取自组内首个文件，供序列树分组 ── */
+  patientId: string | undefined;
+  patientName: string;
+  studyInstanceUid: string | undefined;
+  studyDate: string | undefined;
+  studyDescription: string | undefined;
 }
 
 /** FR-2.3 最小排序比较器：InstanceNumber → SliceLocation → 文件名 */
@@ -94,6 +100,11 @@ export function buildSeriesStacks(opened: OpenedDicomFile[]): SeriesStack[] {
         first.summary.studyDescription ??
         undefined,
       items: files.flatMap(toStackItems),
+      patientId: first.summary.patientId,
+      patientName: first.summary.patientName,
+      studyInstanceUid: first.summary.studyInstanceUid,
+      studyDate: first.summary.studyDate,
+      studyDescription: first.summary.studyDescription,
     });
   }
 

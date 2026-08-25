@@ -48,6 +48,8 @@ export interface DicomInstanceSummary {
   patientSex: string | undefined;
   patientAge: string | undefined;
   modality: string;
+  /** 检查实例 UID（FR-1.10 四级元数据：患者→检查→序列→实例 的检查层分组键） */
+  studyInstanceUid: string | undefined;
   studyDate: string | undefined;
   studyDescription: string | undefined;
   institutionName: string | undefined;
@@ -58,7 +60,16 @@ export interface DicomInstanceSummary {
   sliceLocation: number | undefined;
   sliceThickness: number | undefined;
   pixelSpacing: [number, number] | undefined;
+  /** 图像位置（0020,0032），FR-2.3 第三级排序键（切片法向量投影） */
+  imagePositionPatient: [number, number, number] | undefined;
   imageOrientationPatient: [number, number, number, number, number, number] | undefined;
+  /**
+   * 增强型多帧（Enhanced CT/MR）Per-frame Functional Groups Sequence
+   * （5200,9230）→ Plane Position Sequence（0020,9113）中逐帧的
+   * ImagePositionPatient，数组下标 = 帧号-1。
+   * 任一帧缺失或解析异常时为 undefined（退回自然帧序，报告中注明限制）。
+   */
+  perFrameImagePositions: Array<[number, number, number]> | undefined;
   windowWidth: number | undefined;
   windowCenter: number | undefined;
   rows: number;
@@ -148,6 +159,45 @@ function safeNumberArray(
   return values.length > 0 ? values : undefined;
 }
 
+function toTuple3(values: number[] | undefined): [number, number, number] | undefined {
+  return values !== undefined && values.length >= 3
+    ? [values[0] ?? 0, values[1] ?? 0, values[2] ?? 0]
+    : undefined;
+}
+
+/**
+ * 提取增强型多帧的逐帧图像位置（FR-1.8）：
+ * Per-frame Functional Groups Sequence（5200,9230）
+ *   → 各帧 Plane Position Sequence（0020,9113）
+ *   → ImagePositionPatient（0020,0032）。
+ * 任一帧缺失/异常时整体返回 undefined（调用方退回自然帧序）。
+ */
+function extractPerFrameImagePositions(
+  dataSet: dicomParser.DataSet,
+): Array<[number, number, number]> | undefined {
+  try {
+    const items = dataSet.elements['x52009230']?.items;
+    if (!items || items.length === 0) {
+      return undefined;
+    }
+    const positions: Array<[number, number, number]> = [];
+    for (const item of items) {
+      const planePositionItem = item.dataSet?.elements['x00209113']?.items?.[0]?.dataSet;
+      if (!planePositionItem) {
+        return undefined;
+      }
+      const position = toTuple3(safeNumberArray(planePositionItem, 'x00200032'));
+      if (!position) {
+        return undefined;
+      }
+      positions.push(position);
+    }
+    return positions;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * 从已解析数据集中提取实例级元数据摘要。
  * 所有字段容错读取：单个 Tag 异常不影响整体。
@@ -169,6 +219,7 @@ export function extractInstanceSummary(
     patientSex: safeString(dataSet, 'x00100040'),
     patientAge: safeString(dataSet, 'x00101010'),
     modality: safeString(dataSet, 'x00080060') ?? '?',
+    studyInstanceUid: safeString(dataSet, 'x0020000d'),
     studyDate: safeString(dataSet, 'x00080020'),
     studyDescription: safeString(dataSet, 'x00081030'),
     institutionName: safeString(dataSet, 'x00080080'),
@@ -179,6 +230,7 @@ export function extractInstanceSummary(
     sliceLocation: safeNumber(dataSet, 'x00201041'),
     sliceThickness: safeNumber(dataSet, 'x00180050'),
     pixelSpacing: pixelSpacingTuple,
+    imagePositionPatient: toTuple3(safeNumberArray(dataSet, 'x00200032')),
     imageOrientationPatient:
       iop !== undefined && iop.length >= 6
         ? [
@@ -190,6 +242,8 @@ export function extractInstanceSummary(
             iop[5] ?? 0,
           ]
         : undefined,
+    perFrameImagePositions:
+      numberOfFrames > 1 ? extractPerFrameImagePositions(dataSet) : undefined,
     windowWidth: safeNumber(dataSet, 'x00281051'),
     windowCenter: safeNumber(dataSet, 'x00281050'),
     rows: safeUint16(dataSet, 'x00280010') ?? 0,
