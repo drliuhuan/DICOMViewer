@@ -68,6 +68,13 @@ body {
   filter: brightness(1.1);
 }
 
+/* 次级打开入口（打开文件夹）：描边样式与主按钮区分 */
+.open-button--secondary {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
 .file-input {
   display: none;
 }

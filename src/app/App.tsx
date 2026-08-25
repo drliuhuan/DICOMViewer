@@ -11,6 +11,12 @@ import {
   openDicomFiles,
   type LoadFailure,
 } from '../features/loading/openDicomFiles';
+import {
+  scanDroppedItems,
+  scanDirectoryHandle,
+  supportsDirectoryPicker,
+  type DirectoryHandleLike,
+} from '../features/loading/directoryScan';
 import { buildSeriesStacks, type SeriesStack, type StackItem } from '../features/series/buildStacks';
 import type { ViewportApi, ViewportUiState } from '../features/viewer/DicomViewport';
 import { ViewerCell } from '../features/viewer/ViewerCell';
@@ -83,7 +89,17 @@ export default function App() {
 
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
   const apisRef = useRef<Map<string, ViewportApi>>(new Map());
+
+  // webkitdirectory/directory 属性 React 不在类型中支持，挂载时手动设置（FR-1.2 Firefox/Safari 路径）
+  useEffect(() => {
+    const el = folderInputRef.current;
+    if (el) {
+      el.setAttribute('webkitdirectory', '');
+      el.setAttribute('directory', '');
+    }
+  }, []);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -139,6 +155,31 @@ export default function App() {
     }
   }, []);
 
+  /** 「打开文件夹」：Chromium 走 File System Access API，其余浏览器走 webkitdirectory 输入框 */
+  const openFolder = useCallback(async () => {
+    if (!supportsDirectoryPicker()) {
+      folderInputRef.current?.click();
+      return;
+    }
+    try {
+      const handle = await window.showDirectoryPicker?.({ mode: 'read' });
+      if (!handle) {
+        return;
+      }
+      const scanned = await scanDirectoryHandle(handle as unknown as DirectoryHandleLike);
+      void handleFiles(scanned.map((item) => item.file));
+    } catch (error) {
+      if ((error as { name?: string } | null)?.name === 'AbortError') {
+        return; // 用户取消选择
+      }
+      console.error('[App] 打开文件夹失败', error);
+      setLoadState({
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [handleFiles]);
+
   // 全窗口拖拽入口（FR-1.1）；内部序列卡片拖拽（自定义 MIME）不触发文件打开 UI
   useEffect(() => {
     const onDragOver = (event: DragEvent) => {
@@ -170,7 +211,19 @@ export default function App() {
       if (isSeriesDragEvent(event)) {
         return;
       }
-      void handleFiles(Array.from(event.dataTransfer?.files ?? []));
+      void (async () => {
+        try {
+          const result = await scanDroppedItems(event.dataTransfer);
+          if (result.needsPickerFallback) {
+            showToast('当前浏览器不支持拖拽文件夹，请使用「打开文件夹」按钮');
+            return;
+          }
+          await handleFiles(result.files.map((item) => item.file));
+        } catch (error) {
+          console.error('[App] 读取拖入的文件/文件夹失败', error);
+          showToast('读取拖入内容失败，请改用「打开文件」按钮');
+        }
+      })();
     };
     window.addEventListener('dragover', onDragOver);
     window.addEventListener('dragenter', onDragEnter);
@@ -182,7 +235,7 @@ export default function App() {
       window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', onDrop);
     };
-  }, [handleFiles]);
+  }, [handleFiles, showToast]);
 
   // ── 派生数据 ────────────────────────────────────────
   const stackByUid = useMemo(() => {
@@ -355,12 +408,32 @@ export default function App() {
         >
           打开文件
         </button>
+        <button
+          type="button"
+          className="open-button open-button--secondary"
+          title={supportsDirectoryPicker() ? '递归打开整个文件夹' : '递归打开整个文件夹（含子文件夹）'}
+          onClick={() => void openFolder()}
+        >
+          打开文件夹
+        </button>
         <input
           ref={fileInputRef}
           type="file"
           multiple
           className="file-input"
           aria-label="选择 DICOM 文件（可多选）"
+          onChange={(event) => {
+            const files = event.target.files ? Array.from(event.target.files) : [];
+            void handleFiles(files);
+            event.target.value = '';
+          }}
+        />
+        <input
+          ref={folderInputRef}
+          type="file"
+          multiple
+          className="file-input"
+          aria-label="选择 DICOM 文件夹（递归包含子文件夹）"
           onChange={(event) => {
             const files = event.target.files ? Array.from(event.target.files) : [];
             void handleFiles(files);
@@ -645,9 +718,9 @@ export default function App() {
           {(loadState.status === 'idle' ||
             (loadState.status === 'error' && seriesList.length === 0)) && (
             <div className="empty-hint">
-              将 DICOM 文件拖拽到窗口任意位置，
+              将 DICOM 文件或整个文件夹拖拽到窗口任意位置，
               <br />
-              或点击上方「打开文件」按钮（可多选）
+              或点击上方「打开文件 / 打开文件夹」按钮
             </div>
           )}
           {dragActive && <div className="drop-overlay">松开以打开文件</div>}
