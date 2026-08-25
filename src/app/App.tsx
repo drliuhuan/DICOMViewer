@@ -1,5 +1,6 @@
 /**
- * 应用壳：工具栏（打开文件）、全窗口拖拽、错误提示、视口、序列面板与信息覆盖。
+ * 应用壳：工具栏、全窗口拖拽、错误提示、视口与序列面板。
+ * 工具/视图操作通过 DicomViewport 上报的命令式 API 驱动。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -7,7 +8,13 @@ import {
   type LoadFailure,
 } from '../features/loading/openDicomFiles';
 import { buildSeriesStacks, type SeriesStack } from '../features/series/buildStacks';
-import { DicomViewport, STACK_VIEWPORT_ID } from '../features/viewer/DicomViewport';
+import {
+  DicomViewport,
+  STACK_VIEWPORT_ID,
+  type ViewportApi,
+  type ViewportUiState,
+} from '../features/viewer/DicomViewport';
+import { PLACEHOLDER_MEASUREMENT_TOOLS, ToolNames } from '../features/viewer/toolSetup';
 
 type LoadState =
   | { status: 'idle' }
@@ -15,15 +22,26 @@ type LoadState =
   | { status: 'loaded' }
   | { status: 'error'; message: string };
 
+const EMPTY_UI: ViewportUiState = { sliceIndex: 0, sliceCount: 0, ww: 0, wl: 0 };
+
 export default function App() {
   const [loadState, setLoadState] = useState<LoadState>({ status: 'idle' });
   const [dragActive, setDragActive] = useState(false);
   const [seriesList, setSeriesList] = useState<SeriesStack[]>([]);
   const [failures, setFailures] = useState<LoadFailure[]>([]);
-  /** 当前加载到唯一视口的堆栈（M1 布局提交前为固定视口） */
   const [activeSeriesUid, setActiveSeriesUid] = useState<string | null>(null);
+  /** 当前主拖动工具（null = 默认窗宽窗位） */
+  const [primaryTool, setPrimaryTool] = useState<string | null>(ToolNames.windowLevel);
+  const [ui, setUi] = useState<ViewportUiState>(EMPTY_UI);
+  const [toast, setToast] = useState<string | null>(null);
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const apiRef = useRef<ViewportApi | null>(null);
+
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(null), 2200);
+  }, []);
 
   const handleFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) {
@@ -39,9 +57,7 @@ export default function App() {
         setLoadState({
           status: 'error',
           message:
-            failed.length > 0
-              ? failed[0]?.message ?? '没有可显示的 DICOM 文件'
-              : '没有可显示的 DICOM 文件',
+            failed[0]?.message ?? '没有可显示的 DICOM 文件',
         });
         return;
       }
@@ -99,10 +115,30 @@ export default function App() {
     () => activeStack?.items.map((item) => item.imageId) ?? [],
     [activeStack],
   );
-  const activeSummary =
-    activeStack !== null ? (activeStack.items[0]?.summary ?? null) : null;
+
+  /** 激活主拖动工具；测量类工具为 M3 占位 */
+  const activateTool = useCallback(
+    (toolName: string) => {
+      if (PLACEHOLDER_MEASUREMENT_TOOLS.includes(toolName)) {
+        showToast('该测量工具在 M3 提供');
+        return;
+      }
+      const next =
+        toolName !== ToolNames.windowLevel && primaryTool === toolName
+          ? ToolNames.windowLevel
+          : toolName;
+      setPrimaryTool(next);
+      apiRef.current?.setPrimaryTool(next);
+    },
+    [primaryTool, showToast],
+  );
+
+  const scrollSlice = useCallback((delta: number) => {
+    apiRef.current?.scrollSlice(delta);
+  }, []);
 
   const totalFiles = seriesList.reduce((sum, s) => sum + s.items.length, 0);
+  const hasStack = ui.sliceCount > 0;
 
   return (
     <div className={`app${dragActive ? ' app--drag-active' : ''}`}>
@@ -129,8 +165,70 @@ export default function App() {
             event.target.value = '';
           }}
         />
+
+        <div className="toolbar-group" role="group" aria-label="工具">
+          <button
+            type="button"
+            className={`tool-button${primaryTool === ToolNames.windowLevel ? ' tool-button--active' : ''}`}
+            title="窗宽窗位（左键拖动）"
+            onClick={() => activateTool(ToolNames.windowLevel)}
+          >
+            窗宽窗位
+          </button>
+          <button
+            type="button"
+            className={`tool-button${primaryTool === ToolNames.zoom ? ' tool-button--active' : ''}`}
+            title="缩放（拖动 / Ctrl+滚轮）"
+            onClick={() => activateTool(ToolNames.zoom)}
+          >
+            缩放
+          </button>
+          <button
+            type="button"
+            className={`tool-button${primaryTool === ToolNames.pan ? ' tool-button--active' : ''}`}
+            title="平移（中键拖动）"
+            onClick={() => activateTool(ToolNames.pan)}
+          >
+            平移
+          </button>
+          <button
+            type="button"
+            className={`tool-button${primaryTool === ToolNames.stackScroll ? ' tool-button--active' : ''}`}
+            title="层滚动（激活后拖动翻层；滚轮默认翻页）"
+            onClick={() => activateTool(ToolNames.stackScroll)}
+          >
+            层滚动
+          </button>
+        </div>
+
+        {hasStack && (
+          <div className="toolbar-group" aria-label="翻页">
+            <button
+              type="button"
+              className="tool-button"
+              disabled={ui.sliceIndex <= 0}
+              onClick={() => scrollSlice(-1)}
+              title="上一帧（PageUp / ←）"
+            >
+              ◀
+            </button>
+            <span className="slice-counter">
+              第 {ui.sliceIndex + 1} / {ui.sliceCount} 层
+            </span>
+            <button
+              type="button"
+              className="tool-button"
+              disabled={ui.sliceIndex >= ui.sliceCount - 1}
+              onClick={() => scrollSlice(1)}
+              title="下一帧（PageDown / →）"
+            >
+              ▶
+            </button>
+          </div>
+        )}
+
         <span className="toolbar-hint">
-          支持多选/拖拽多个 DICOM 文件，滚轮翻页
+          多选/拖拽打开 · 滚轮翻页 · Ctrl+滚轮缩放 · 中键平移
         </span>
       </header>
 
@@ -142,19 +240,16 @@ export default function App() {
           </button>
         </div>
       )}
-      {!(
-        loadState.status === 'error' && failures.length > 0
-      ) &&
-        failures.length > 0 && (
-          <div className="warn-banner">
-            {failures.length} 个文件解析失败已跳过：
-            {failures
-              .slice(0, 3)
-              .map((f) => f.fileName)
-              .join('、')}
-            {failures.length > 3 ? ' …' : ''}
-          </div>
-        )}
+      {loadState.status !== 'error' && failures.length > 0 && (
+        <div className="warn-banner">
+          {failures.length} 个文件解析失败已跳过：
+          {failures
+            .slice(0, 3)
+            .map((f) => f.fileName)
+            .join('、')}
+          {failures.length > 3 ? ' …' : ''}
+        </div>
+      )}
 
       <main className="workspace">
         {seriesList.length > 0 && (
@@ -183,19 +278,15 @@ export default function App() {
         )}
 
         <div className="viewport-area">
-          {(activeStack !== null || loadState.status === 'loading') && (
+          {(activeImageIds.length > 0 || loadState.status === 'loading') && (
             <>
-              <DicomViewport imageIds={activeImageIds} />
-              {activeSummary !== null && activeStack !== null && (
-                <div className="info-overlay">
-                  <div>PatientName: {activeSummary.patientName}</div>
-                  <div>Modality: {activeSummary.modality}</div>
-                  <div>
-                    Rows×Cols: {activeSummary.rows}×{activeSummary.columns} ·{' '}
-                    {activeStack.items.length} 帧
-                  </div>
-                </div>
-              )}
+              <DicomViewport
+                imageIds={activeImageIds}
+                onApiReady={(api) => {
+                  apiRef.current = api;
+                }}
+                onUiChange={setUi}
+              />
             </>
           )}
           {loadState.status === 'loading' && (
@@ -212,6 +303,12 @@ export default function App() {
           {dragActive && <div className="drop-overlay">松开以打开文件</div>}
         </div>
       </main>
+
+      {toast !== null && (
+        <div role="status" className="toast">
+          {toast}
+        </div>
+      )}
 
       <footer className="statusbar">
         {activeStack !== null
