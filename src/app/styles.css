@@ -234,6 +234,70 @@ body {
   font-size: 13px;
 }
 
+/* ── 打开文件错误报告（FR-1.4/1.5：汇总 + 可展开列表） ── */
+.error-report {
+  margin: 8px 12px 0;
+  border: 1px solid #b58a2b;
+  border-radius: 8px;
+  background: #33290f;
+  color: #ffe9b3;
+  font-size: 13px;
+}
+
+.error-report-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+}
+
+.error-report-toggle {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border: 1px solid #b58a2b;
+  border-radius: 6px;
+  background: transparent;
+  color: #ffe9b3;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.error-report-toggle:hover {
+  background: rgba(181, 138, 43, 0.18);
+}
+
+.error-report-list {
+  max-height: 180px;
+  margin: 0;
+  padding: 4px 14px 10px;
+  overflow-y: auto;
+  list-style: none;
+  border-top: 1px solid rgba(181, 138, 43, 0.35);
+}
+
+.error-report-item {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 0;
+}
+
+.error-report-file {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.error-report-reason {
+  color: #d8c48f;
+  font-size: 12px;
+}
+
+.error-report-item--skipped .error-report-reason {
+  color: var(--text-dim);
+}
+
 /* ── 工作区（序列面板 + 视口区）────────── */
 .workspace {
   display: flex;

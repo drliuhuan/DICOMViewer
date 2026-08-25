@@ -14,6 +14,17 @@ export class NotDicomError extends Error {
   }
 }
 
+/**
+ * 有 DICM 魔数但内容损坏/截断导致解析失败。
+ * 继承 NotDicomError 以兼容既有捕获方，同时供错误报告区分「非 DICOM 跳过」与「坏文件」。
+ */
+export class ParseFailureError extends NotDicomError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ParseFailureError';
+  }
+}
+
 const DICM_MAGIC_OFFSET = 128;
 
 /** 校验 Part-10 前导：128 字节 preamble + "DICM" 魔数 */
@@ -82,7 +93,7 @@ export function parseDicomArrayBuffer(
   try {
     return dicomParser.parseDicom(view);
   } catch (error) {
-    throw new NotDicomError(
+    throw new ParseFailureError(
       `DICOM 解析失败：${error instanceof Error ? error.message : String(error)}`,
     );
   }

@@ -16,7 +16,9 @@ import {
   scanDirectoryHandle,
   supportsDirectoryPicker,
   type DirectoryHandleLike,
+  type ScannedFile,
 } from '../features/loading/directoryScan';
+import { ErrorReportPanel } from '../ui/components/ErrorReportPanel';
 import { buildSeriesStacks, type SeriesStack, type StackItem } from '../features/series/buildStacks';
 import type { ViewportApi, ViewportUiState } from '../features/viewer/DicomViewport';
 import { ViewerCell } from '../features/viewer/ViewerCell';
@@ -123,13 +125,13 @@ export default function App() {
   const hasStack = activeUi.sliceCount > 0;
 
   // ── 文件打开 ────────────────────────────────────────
-  const handleFiles = useCallback(async (files: File[]) => {
-    if (files.length === 0) {
+  const handleFiles = useCallback(async (inputs: readonly (ScannedFile | File)[]) => {
+    if (inputs.length === 0) {
       return;
     }
-    setLoadState({ status: 'loading', count: files.length });
+    setLoadState({ status: 'loading', count: inputs.length });
     try {
-      const { opened, failures: failed } = await openDicomFiles(files);
+      const { opened, failures: failed } = await openDicomFiles(inputs);
       const stacks = buildSeriesStacks(opened);
       setSeriesList(stacks);
       setFailures(failed);
@@ -167,7 +169,7 @@ export default function App() {
         return;
       }
       const scanned = await scanDirectoryHandle(handle as unknown as DirectoryHandleLike);
-      void handleFiles(scanned.map((item) => item.file));
+      void handleFiles(scanned);
     } catch (error) {
       if ((error as { name?: string } | null)?.name === 'AbortError') {
         return; // 用户取消选择
@@ -218,7 +220,7 @@ export default function App() {
             showToast('当前浏览器不支持拖拽文件夹，请使用「打开文件夹」按钮');
             return;
           }
-          await handleFiles(result.files.map((item) => item.file));
+          await handleFiles(result.files);
         } catch (error) {
           console.error('[App] 读取拖入的文件/文件夹失败', error);
           showToast('读取拖入内容失败，请改用「打开文件」按钮');
@@ -643,14 +645,7 @@ export default function App() {
         </div>
       )}
       {loadState.status !== 'error' && failures.length > 0 && (
-        <div className="warn-banner">
-          {failures.length} 个文件解析失败已跳过：
-          {failures
-            .slice(0, 3)
-            .map((f) => f.fileName)
-            .join('、')}
-          {failures.length > 3 ? ' …' : ''}
-        </div>
+        <ErrorReportPanel failures={failures} />
       )}
 
       <main className="workspace">
