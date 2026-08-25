@@ -119,6 +119,40 @@ body {
   white-space: nowrap;
 }
 
+/* ── 窗宽窗位控件 ───────────────────────── */
+.preset-select {
+  max-width: 170px;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.wwwl-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.wwwl-input {
+  width: 76px;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.wwwl-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* ── 视口内层滑块 ───────────────────────── */
 .slice-control {
   position: absolute;

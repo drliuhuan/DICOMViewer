@@ -15,6 +15,11 @@ import {
   type ViewportUiState,
 } from '../features/viewer/DicomViewport';
 import { PLACEHOLDER_MEASUREMENT_TOOLS, ToolNames } from '../features/viewer/toolSetup';
+import {
+  WW_WL_PRESETS,
+  findPresetById,
+  getDefaultWwWlForModality,
+} from '../features/viewer/wwPresets';
 
 type LoadState =
   | { status: 'idle' }
@@ -33,6 +38,9 @@ export default function App() {
   /** 当前主拖动工具（null = 默认窗宽窗位） */
   const [primaryTool, setPrimaryTool] = useState<string | null>(ToolNames.windowLevel);
   const [ui, setUi] = useState<ViewportUiState>(EMPTY_UI);
+  /** WW/WL 输入框草稿（允许清空/中间态，失焦或回车时提交） */
+  const [wwDraft, setWwDraft] = useState('');
+  const [wlDraft, setWlDraft] = useState('');
   const [toast, setToast] = useState<string | null>(null);
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -137,6 +145,49 @@ export default function App() {
     apiRef.current?.scrollSlice(delta);
   }, []);
 
+  // 视口 WW/WL 变化（拖动/预设/重置）→ 同步输入框草稿与预设选中态
+  useEffect(() => {
+    setWwDraft(String(ui.ww));
+    setWlDraft(String(ui.wl));
+  }, [ui.ww, ui.wl]);
+
+  const activePresetId = useMemo(
+    () =>
+      WW_WL_PRESETS.find((p) => p.ww === ui.ww && p.wl === ui.wl)?.id ?? '',
+    [ui.ww, ui.wl],
+  );
+
+  /** 提交输入框草稿为窗宽窗位；非法值回退到当前生效值 */
+  const commitWwWlDraft = useCallback(() => {
+    const ww = Number(wwDraft);
+    const wl = Number(wlDraft);
+    if (Number.isFinite(ww) && ww > 0 && Number.isFinite(wl)) {
+      apiRef.current?.applyWwWl(ww, wl);
+    } else {
+      setWwDraft(String(ui.ww));
+      setWlDraft(String(ui.wl));
+    }
+  }, [wwDraft, wlDraft, ui.ww, ui.wl]);
+
+  const applyPreset = useCallback((presetId: string) => {
+    const preset = findPresetById(presetId);
+    if (preset) {
+      apiRef.current?.applyWwWl(preset.ww, preset.wl);
+    }
+  }, []);
+
+  /** 当前堆栈的默认窗宽窗位（文件自带优先，其次模态预设） */
+  const defaultWwWl = useMemo(() => {
+    if (activeStack === null) {
+      return undefined;
+    }
+    const summary = activeStack.items[0]?.summary;
+    return getDefaultWwWlForModality(summary?.modality ?? '', {
+      windowWidth: summary?.windowWidth,
+      windowCenter: summary?.windowCenter,
+    });
+  }, [activeStack]);
+
   const totalFiles = seriesList.reduce((sum, s) => sum + s.items.length, 0);
   const hasStack = ui.sliceCount > 0;
 
@@ -200,6 +251,70 @@ export default function App() {
             层滚动
           </button>
         </div>
+
+        {hasStack && (
+          <div className="toolbar-group" aria-label="窗宽窗位">
+            <select
+              className="preset-select"
+              value={activePresetId}
+              onChange={(event) => applyPreset(event.target.value)}
+              aria-label="窗宽窗位预设"
+            >
+              <option value="">自定义</option>
+              {WW_WL_PRESETS.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+            <label className="wwwl-field">
+              WW
+              <input
+                type="number"
+                className="wwwl-input"
+                value={wwDraft}
+                min={1}
+                step={1}
+                onChange={(event) => setWwDraft(event.target.value)}
+                onBlur={commitWwWlDraft}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    commitWwWlDraft();
+                  }
+                }}
+                aria-label="窗宽"
+              />
+            </label>
+            <label className="wwwl-field">
+              WL
+              <input
+                type="number"
+                className="wwwl-input"
+                value={wlDraft}
+                step={1}
+                onChange={(event) => setWlDraft(event.target.value)}
+                onBlur={commitWwWlDraft}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    commitWwWlDraft();
+                  }
+                }}
+                aria-label="窗位"
+              />
+            </label>
+            <button
+              type="button"
+              className="tool-button"
+              title="恢复默认窗宽窗位"
+              onClick={() =>
+                defaultWwWl !== undefined &&
+                apiRef.current?.applyWwWl(defaultWwWl.ww, defaultWwWl.wl)
+              }
+            >
+              重置窗宽窗位
+            </button>
+          </div>
+        )}
 
         {hasStack && (
           <div className="toolbar-group" aria-label="翻页">
@@ -282,6 +397,7 @@ export default function App() {
             <>
               <DicomViewport
                 imageIds={activeImageIds}
+                defaultWwWl={defaultWwWl}
                 onApiReady={(api) => {
                   apiRef.current = api;
                 }}

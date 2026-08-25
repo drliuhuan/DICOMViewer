@@ -16,6 +16,7 @@ import {
   initializeTools,
   syncToolBindings,
 } from './toolSetup';
+import { voiRangeFromWwWl } from './wwPresets';
 
 const RENDERING_ENGINE_ID = 'dicom-viewer-m1-engine';
 export const STACK_VIEWPORT_ID = 'dicom-viewer-vp-0';
@@ -33,11 +34,17 @@ export interface ViewportApi {
   scrollSlice: (delta: number) => void;
   setImageIndex: (index: number) => void;
   setPrimaryTool: (toolName: string | null) => void;
+  /** 应用窗宽窗位（FR-3.2 输入框 / FR-3.3 预设） */
+  applyWwWl: (ww: number, wl: number) => void;
+  /** 恢复默认窗宽窗位（FR-3.4） */
+  resetWindowLevel: () => void;
 }
 
 interface DicomViewportProps {
   /** 待显示的 imageId 列表（堆栈）；空数组表示空态 */
   imageIds: string[];
+  /** 该堆栈的默认窗宽窗位（文件自带值优先，其次模态预设） */
+  defaultWwWl?: { ww: number; wl: number };
   /** 视口就绪后上报命令式 API（仅首次） */
   onApiReady?: (api: ViewportApi) => void;
   /** UI 状态变化回调（层号 / 窗宽窗位） */
@@ -62,9 +69,15 @@ function voiToWwWl(range: Types.VOIRange | undefined): { ww: number; wl: number 
   };
 }
 
-export function DicomViewport({ imageIds, onApiReady, onUiChange }: DicomViewportProps) {
+export function DicomViewport({
+  imageIds,
+  defaultWwWl,
+  onApiReady,
+  onUiChange,
+}: DicomViewportProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<Types.IStackViewport | null>(null);
+  const defaultWwWlRef = useRef<{ ww: number; wl: number } | undefined>(defaultWwWl);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [uiState, setUiState] = useState<ViewportUiState>({
     sliceIndex: 0,
@@ -72,6 +85,11 @@ export function DicomViewport({ imageIds, onApiReady, onUiChange }: DicomViewpor
     ww: 0,
     wl: 0,
   });
+
+  // 默认窗宽窗位变化时保持 ref 同步（供 API 回调读取最新值）
+  useEffect(() => {
+    defaultWwWlRef.current = defaultWwWl;
+  }, [defaultWwWl]);
 
   const publishUi = useCallback(
     (partial: Partial<ViewportUiState>) => {
@@ -124,6 +142,23 @@ export function DicomViewport({ imageIds, onApiReady, onUiChange }: DicomViewpor
             syncToolBindings(toolGroup, toolName);
           }
         },
+        applyWwWl: (ww, wl) => {
+          const vp = viewportRef.current;
+          if (!vp || !Number.isFinite(ww) || ww <= 0 || !Number.isFinite(wl)) {
+            return;
+          }
+          vp.setProperties({ voiRange: voiRangeFromWwWl(ww, wl) });
+          vp.render();
+        },
+        resetWindowLevel: () => {
+          const vp = viewportRef.current;
+          const fallback = defaultWwWlRef.current;
+          if (!vp || !fallback) {
+            return;
+          }
+          vp.setProperties({ voiRange: voiRangeFromWwWl(fallback.ww, fallback.wl) });
+          vp.render();
+        },
       });
     });
 
@@ -153,6 +188,11 @@ export function DicomViewport({ imageIds, onApiReady, onUiChange }: DicomViewpor
           throw new Error('渲染引擎尚未就绪');
         }
         await viewport.setStack(imageIds);
+        // 默认窗宽窗位：文件自带值优先（defaultWwWl 已在 App 计算），否则模态预设
+        const fallback = defaultWwWlRef.current;
+        if (fallback) {
+          viewport.setProperties({ voiRange: voiRangeFromWwWl(fallback.ww, fallback.wl) });
+        }
         viewport.render();
         if (cancelled) {
           return;
