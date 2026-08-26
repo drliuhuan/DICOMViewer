@@ -8,7 +8,16 @@
  * - M7：i18n 上下文（zh 默认，FR-12.3）、设置面板（FR-12 子集）、
  *   快捷键帮助浮层（FR-11）、缩略图分批生成（NFR-2）；
  * - M8：PACS 联网面板（FR-13 子集）：DICOMweb 配置/连接测试/QIDO 查询/
- *   WADO 拉取入序列树（来源标记「远程」）。
+ *   WADO 拉取入序列树（来源标记「远程」）；
+ * - M9：移动端适配（FR-14 子集）：窄屏抽屉式序列面板（≤767px，FR-14.2）、
+ *   iOS 无文件夹选择提示与多选文件（FR-14.3）、低内存设备缩略图/缓存
+ *   上限降级（FR-14.4）；触控手势映射与双击适应窗口在 toolSetup/
+ *   DicomViewport 层实现（FR-14.1）。
+ *
+ * TODO(FR-14)：P1/P2 未做条目——双指窗宽窗位/旋转/长按防误触（FR-14.1）、
+ * 横屏自动阅片布局与旋转保持验证（FR-14.11）、触控命中区 44px 精调与
+ * 破坏性操作二次确认（FR-14.6）、3D 降质回退（FR-14.5）、信息字号自适应
+ * 与状态栏折叠（FR-14.8）、PWA 启动画面（FR-14.7）。
  *
  * TODO(FR-12.3/NFR-9)：其余存量文案（进度条/toast/状态栏/错误报告等）迁入 i18n 词典。
  */
@@ -67,6 +76,15 @@ import {
   saveSettings,
   type AppSettings,
 } from '../features/settings/settings';
+import {
+  MOBILE_MEDIA_QUERY,
+  useMediaQuery,
+} from '../ui/hooks/useMediaQuery';
+import { detectMobileFileAccess } from '../features/loading/mobileFileAccess';
+import {
+  adaptSettingsForDevice,
+  detectDeviceProfile,
+} from '../features/perf/deviceProfile';
 import { I18nContext, translate, type I18nContextValue } from '../ui/i18n/i18n';
 
 type LoadState =
@@ -132,6 +150,18 @@ export default function App() {
   /** PACS 服务器配置（FR-13.1 子集）：localStorage 持久化 */
   const [pacsServers, setPacsServers] = useState<PacsServerConfig[]>(() => loadPacsServers());
   const [showPacs, setShowPacs] = useState(false);
+  /** 窄屏（手机）判定：≤767px 时序列面板折叠为抽屉（FR-14.2） */
+  const isMobile = useMediaQuery(MOBILE_MEDIA_QUERY);
+  /** 移动端序列抽屉开合（仅窄屏使用） */
+  const [seriesDrawerOpen, setSeriesDrawerOpen] = useState(false);
+
+  /** 文件打开能力（FR-14.3）：iOS 无文件夹选择 → 提示 + 多选文件引导 */
+  const fileAccess = useMemo(
+    () => detectMobileFileAccess(window.navigator.userAgent, window.navigator.maxTouchPoints),
+    [],
+  );
+  /** 设备画像（FR-14.4）：低内存设备运行时降级缓存上限 */
+  const deviceProfile = useMemo(() => detectDeviceProfile(window.navigator), []);
 
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -153,23 +183,30 @@ export default function App() {
   }, []);
 
   // ── 设置（FR-12 子集）────────────────────────────────
-  /** 变更设置：sanitize → 持久化 → 应用副作用（主题/图像缓存/缩略图 LRU） */
+  /**
+   * 变更设置：sanitize → 持久化 → 应用副作用（主题/图像缓存/缩略图 LRU）。
+   * 副作用按设备画像降级后的值应用（FR-14.4）：降级仅运行时生效，
+   * 持久化的始终是用户原始设置。
+   */
   const updateSettings = useCallback((patch: Partial<AppSettings>) => {
     setSettings((prev) => {
       const next = sanitizeSettings({ ...prev, ...patch });
       saveSettings(next);
-      applySettingsEffects(next, {
+      applySettingsEffects(adaptSettingsForDevice(next, deviceProfile), {
         cacheApi: cache,
         setThumbnailLimit: setThumbnailMaxCount,
       });
       return next;
     });
-  }, []);
+  }, [deviceProfile]);
 
   // 挂载时应用已持久化的设置（主题 + 缩略图上限；
-  // Cornerstone 缓存上限仅在设置面板变更时应用，避免管线未初始化时触碰 cache）
+  // Cornerstone 缓存上限仅在设置面板变更时应用，避免管线未初始化时触碰 cache；
+  // 低内存设备按画像降级缩略图上限，FR-14.4）
   useEffect(() => {
-    applySettingsEffects(settings, { setThumbnailLimit: setThumbnailMaxCount });
+    applySettingsEffects(adaptSettingsForDevice(settings, deviceProfile), {
+      setThumbnailLimit: setThumbnailMaxCount,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -669,13 +706,32 @@ export default function App() {
           <button
             type="button"
             className="open-button open-button--secondary"
+            disabled={fileAccess.supportsFolder === false}
             title={
-              supportsDirectoryPicker() ? '递归打开整个文件夹' : '递归打开整个文件夹（含子文件夹）'
+              fileAccess.supportsFolder === false
+                ? '当前设备不支持打开文件夹'
+                : supportsDirectoryPicker()
+                  ? '递归打开整个文件夹'
+                  : '递归打开整个文件夹（含子文件夹）'
             }
             onClick={() => void openFolder()}
           >
             {t('app.openFolder')}
           </button>
+          {isMobile && patientTree.length > 0 && (
+            <button
+              type="button"
+              className={`tool-button series-drawer-toggle${
+                seriesDrawerOpen ? ' tool-button--active' : ''
+              }`}
+              title="序列列表（抽屉）"
+              aria-haspopup="dialog"
+              aria-expanded={seriesDrawerOpen}
+              onClick={() => setSeriesDrawerOpen((prev) => !prev)}
+            >
+              ☰ 序列
+            </button>
+          )}
           <input
             ref={fileInputRef}
             type="file"
@@ -936,8 +992,14 @@ export default function App() {
           <ErrorReportPanel failures={failures} />
         )}
 
+        {fileAccess.supportsFolder === false && (
+          <div className="mobile-open-hint" role="note">
+            {fileAccess.missingFolderHint}
+          </div>
+        )}
+
         <main className="workspace">
-          {patientTree.length > 0 && (
+          {patientTree.length > 0 && !isMobile && (
             <aside className="series-panel" aria-label="序列面板">
               <SeriesPanel
                 patients={patientTree}
@@ -1025,6 +1087,43 @@ export default function App() {
             {dragActive && <div className="drop-overlay">松开以打开文件</div>}
           </div>
         </main>
+
+        {/* 移动端序列抽屉（FR-14.2）：窄屏覆盖式左侧面板，选择序列或点遮罩关闭 */}
+        {isMobile && patientTree.length > 0 && seriesDrawerOpen && (
+          <>
+            <div
+              className="drawer-backdrop"
+              aria-hidden="true"
+              onClick={() => setSeriesDrawerOpen(false)}
+            />
+            <aside className="series-panel series-drawer" aria-label="序列面板">
+              <div className="series-drawer-header">
+                <span>序列</span>
+                <button
+                  type="button"
+                  className="tool-button"
+                  aria-label="关闭序列列表"
+                  onClick={() => setSeriesDrawerOpen(false)}
+                >
+                  ×
+                </button>
+              </div>
+              <SeriesPanel
+                patients={patientTree}
+                activeUid={assignments[activeViewportId] ?? null}
+                onLoadSeries={(seriesUid) => {
+                  loadSeriesToViewport(seriesUid);
+                  setSeriesDrawerOpen(false);
+                }}
+                onCloseSeries={closeSeries}
+                thumbnails={thumbnails}
+              />
+              <button type="button" className="tool-button clear-all-button" onClick={clearAll}>
+                清空全部
+              </button>
+            </aside>
+          </>
+        )}
 
         {toast !== null && (
           <div role="status" className="toast">

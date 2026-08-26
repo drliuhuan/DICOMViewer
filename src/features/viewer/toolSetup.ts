@@ -13,6 +13,19 @@
  *
  * 测量类工具（Length/Angle/RectangleROI/EllipticalROI/Probe）仅注册占位：
  * 激活入口由 UI 层拦截并提示「M3 提供」，避免快捷键体系返工。
+ *
+ * 触控映射（M9，FR-14.1）：Cornerstone3D 5.8.2 的 touch 事件监听在
+ * init() 后随 enableElement 自动挂到视口元素（addEnabledElement →
+ * touchEventListeners + touchToolEventDispatcher），工具按 binding 命中：
+ * - 单指触摸（numTouchPoints=1）→ 命中 defaultMousePrimary（Primary）
+ *   绑定的工具 = 当前主工具（与桌面左键同一套工具状态，天然共用）；
+ * - 双指触摸（numTouchPoints=2）→ ZoomTool 的 { numTouchPoints: 2 } 常驻
+ *   绑定；ZoomTool 内置 pinchToZoom（捏合缩放）+ pan（双指拖动平移）；
+ * - 双击（TOUCH_TAP taps=2）→ 适应窗口，由 DicomViewport 订阅
+ *   TOUCH_TAP_EVENT（见 touchEvents.ts，与桌面 dblclick 同语义，FR-3.4）。
+ *
+ * TODO(FR-14.1)：双指拖动窗宽窗位、双指旋转（P1，与双指平移缩放手势
+ * 冲突，需独立手势仲裁后实现）；长按进入拖拽手柄模式（防误触，P1）。
  */
 import {
   AngleTool,
@@ -88,6 +101,10 @@ const PERSISTENT_BINDINGS: Readonly<Record<string, readonly ToolBinding[]>> = {
   [ToolNames.pan]: [{ mouseButton: MouseBindings.Auxiliary }],
   [ToolNames.zoom]: [
     { mouseButton: MouseBindings.Wheel, modifierKey: KeyboardBindings.Ctrl },
+    // 双指触摸（FR-14.1/AC-28）：numTouchPoints 绑定不占用鼠标键，
+    // 随 passive/active 切换恒保留（setToolPassive 仅剥离 Primary）；
+    // ZoomTool 内置 pinchToZoom 捏合缩放 + pan 双指平移。
+    { numTouchPoints: 2 },
   ],
   [ToolNames.stackScroll]: [{ mouseButton: MouseBindings.Wheel }],
 };

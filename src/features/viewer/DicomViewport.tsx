@@ -19,6 +19,7 @@ import {
   initializeTools,
   syncToolBindings,
 } from './toolSetup';
+import { TOUCH_TAP_EVENT } from './touchEvents';
 import { voiRangeFromWwWl } from './wwPresets';
 import { formatGrayValue, samplePixel } from '../../dicom/pixelProbe';
 import { initializeDicomPipeline } from '../../dicom/init';
@@ -385,7 +386,7 @@ export function DicomViewport({
   }, []);
 
   // 视口事件订阅：翻页滚动 → 层号；VOI 变化 → WW/WL；相机变化 → 缩放比例；
-  // 双击 → 适应窗口（FR-3.4/FR-14.1 桌面语义）
+  // 双击（桌面 dblclick / 触控 TOUCH_TAP taps=2）→ 适应窗口（FR-3.4/FR-14.1）
   useEffect(() => {
     const element = containerRef.current;
     if (!element) {
@@ -416,15 +417,30 @@ export function DicomViewport({
         syncZoom();
       }
     };
+    // 触控双击（FR-14.1）：Cornerstone 将快速两次轻点合成 TOUCH_TAP（taps=2），
+    // 与桌面 dblclick 同为「适应窗口」语义；单指/双指拖动由工具层处理。
+    const onTouchTap = (event: Event) => {
+      const detail = (event as CustomEvent<{ taps?: number }>).detail;
+      if (detail?.taps !== 2) {
+        return;
+      }
+      onDoubleClick();
+    };
     element.addEventListener(Enums.Events.STACK_VIEWPORT_SCROLL, onScroll);
     element.addEventListener(Enums.Events.VOI_MODIFIED, onVoiModified);
     element.addEventListener(Enums.Events.CAMERA_MODIFIED, syncZoom);
     element.addEventListener('dblclick', onDoubleClick);
+    if (TOUCH_TAP_EVENT) {
+      element.addEventListener(TOUCH_TAP_EVENT, onTouchTap);
+    }
     return () => {
       element.removeEventListener(Enums.Events.STACK_VIEWPORT_SCROLL, onScroll);
       element.removeEventListener(Enums.Events.VOI_MODIFIED, onVoiModified);
       element.removeEventListener(Enums.Events.CAMERA_MODIFIED, syncZoom);
       element.removeEventListener('dblclick', onDoubleClick);
+      if (TOUCH_TAP_EVENT) {
+        element.removeEventListener(TOUCH_TAP_EVENT, onTouchTap);
+      }
     };
   }, [publishUi, viewportId]);
 

@@ -13,7 +13,14 @@
 'use strict';
 
 var CACHE_VERSION = 'dicom-viewer-v1';
-var SHELL_URLS = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
+var SHELL_URLS = [
+  '/',
+  '/index.html',
+  '/manifest.webmanifest',
+  '/icon.svg',
+  '/icon-192.png',
+  '/icon-512.png'
+];
 
 self.addEventListener('install', function (event) {
   event.waitUntil(

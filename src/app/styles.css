@@ -44,7 +44,10 @@ body {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 8px 16px;
+  /* 安全区：刘海/圆角设备（viewport-fit=cover 已在 index.html；桌面 env=0） */
+  padding: calc(8px + env(safe-area-inset-top))
+    calc(16px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom))
+    calc(16px + env(safe-area-inset-left));
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
@@ -604,6 +607,8 @@ body {
 .cornerstone-element {
   width: 100%;
   height: 100%;
+  /* 视口内手势优先于页面滚动（FR-14.9）：禁用浏览器默认触摸滚动/双击缩放 */
+  touch-action: none;
 }
 
 .viewport-error {
@@ -759,7 +764,8 @@ body {
 
 /* ── 状态栏 ─────────────────────────────── */
 .statusbar {
-  padding: 4px 16px 8px;
+  padding: 4px calc(16px + env(safe-area-inset-right))
+    calc(8px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
   color: var(--text-dim);
   font-size: 12px;
   white-space: nowrap;
@@ -1047,4 +1053,80 @@ body {
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
+}
+
+/* ── M9 移动端适配（FR-14）───────────────────────────────────────── */
+
+/* 序列抽屉遮罩（窄屏覆盖式左侧面板的点击关闭区） */
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* 抽屉式序列面板：窄屏时左侧滑入，复用 .series-panel 内部结构 */
+.series-drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 41;
+  width: min(320px, 85vw);
+  padding-top: calc(8px + env(safe-area-inset-top));
+  padding-left: calc(8px + env(safe-area-inset-left));
+  padding-right: 8px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  border-radius: 0;
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.45);
+}
+
+.series-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* iOS 无文件夹选择能力提示（FR-14.3） */
+.mobile-open-hint {
+  margin: 8px 12px 0;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* 窄屏（手机 ≤767px）：工具栏允许换行、抽屉按钮触控目标加大 */
+@media (max-width: 767px) {
+  .toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .tool-button,
+  .open-button,
+  .series-drawer-toggle {
+    min-height: 40px;
+  }
+
+  .series-drawer-toggle {
+    margin-left: auto;
+  }
+
+  .statusbar {
+    white-space: normal;
+  }
+}
+
+/* 横屏：视口优先，状态栏精简（FR-14.2 横屏阅片） */
+@media (max-width: 767px) and (orientation: landscape) {
+  .toolbar {
+    gap: 6px;
+  }
 }

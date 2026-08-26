@@ -28,8 +28,8 @@ export const DEFAULT_SETTINGS: Readonly<AppSettings> = Object.freeze({
   thumbnailMaxCount: 100,
 });
 
-const CACHE_MB_MIN = 64;
-const CACHE_MB_MAX = 4096;
+export const CACHE_MB_MIN = 64;
+export const CACHE_MB_MAX = 4096;
 const THUMB_MIN = 10;
 const THUMB_MAX = 500;
 
