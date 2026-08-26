@@ -42,10 +42,12 @@ while [ "$(date +%s)" -lt "$STOP_EPOCH" ]; do
   # 预取下一个任务书（消除里程碑衔接空转；失败不阻塞）
   python3 /home/drliuhuan/.hermes/scripts/night_task_writer.py >>"$LOG" 2>&1 || true
 
-  # 门禁: build(含tsc) 必须过；vitest 必须过；lint 仅告警；OpenCode 输出含 upstream/Endpoint 错误=施工失败
+  # 门禁: build(含tsc) 必须过；vitest 必须过；lint 仅告警；
+  # OpenCode 退出码非0 且 输出有行首 Error: 前缀 = 施工失败（2026-08-26 教训：
+  # 不能用裸关键字 grep——opencode 输出可能包含脚本自身文本导致自匹配误判）
   GATE=OK; GM=""
-  if grep -q "upstream error\|Endpoint is unavailable\|do request failed" "/tmp/oc-night/$NAME.out" 2>/dev/null; then
-    GATE=FAIL; GM="opencode_upstream_error"
+  if [ "$RC" -ne 0 ] && grep -q "^Error:" "/tmp/oc-night/$NAME.out" 2>/dev/null; then
+    GATE=FAIL; GM="opencode_error"
   fi
   if [ "$GATE" = "OK" ]; then
     npm run build >"/tmp/oc-night/$NAME.build.log" 2>&1 || { GATE=FAIL; GM="build"; }
