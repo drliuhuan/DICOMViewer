@@ -7,7 +7,8 @@
  * - 同一患者的多次检查并列分组（FR-2.7）；
  * - M7 性能（NFR-1/NFR-2）：单检查序列数 ≥ VIRTUALIZE_MIN_SERIES 时，
  *   该检查的序列卡片按固定行高窗口化渲染（仅渲染可视区 ± 超扫），
- *   患者/检查标题与少量序列保持原流式结构，小数据集 DOM 不变。
+ *   患者/检查标题与少量序列保持原流式结构，小数据集 DOM 不变；
+ * - M8（FR-13.5/AC-25）：远程拉取的序列卡片显示「远程」来源标记。
  */
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { SeriesStack } from '../../features/series/buildStacks';
@@ -105,6 +106,14 @@ function SeriesCard({
         )}
       </span>
       <span className="series-item-modality">{series.modality}</span>
+      {series.remoteSource !== undefined && (
+        <span
+          className="series-item-remote"
+          title={`远程拉取：${series.remoteSource.serverName} · 检查 ${series.remoteSource.studyUid}`}
+        >
+          远程
+        </span>
+      )}
       <span className="series-item-body">
         <span className="series-item-label">{series.description ?? '未命名序列'}</span>
         <span className="series-item-meta">

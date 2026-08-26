@@ -11,6 +11,7 @@
  */
 import { useCallback, useMemo, useRef, useState } from 'react';
 import {
+  mixedContentWarning,
   pickDefaultServer,
   sanitizePacsServer,
   validatePacsServer,
@@ -116,6 +117,7 @@ export function PacsPanel({
   };
 
   const validationError = selected !== undefined ? validatePacsServer(selected) : '请先添加服务器';
+  const mixedWarning = selected !== undefined ? mixedContentWarning(selected) : null;
   const network = fetchImpl;
 
   const commitDraft = useCallback((): PacsServerConfig | null => {
@@ -394,6 +396,11 @@ export function PacsPanel({
             {validationError !== null && (
               <div className="pacs-status pacs-status--error" role="alert">
                 {validationError}
+              </div>
+            )}
+            {mixedWarning !== null && (
+              <div className="pacs-status pacs-status--warn" role="alert">
+                {mixedWarning}
               </div>
             )}
           </div>

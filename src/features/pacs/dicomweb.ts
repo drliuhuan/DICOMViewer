@@ -306,10 +306,10 @@ export function buildQidoQuery(criteria: PacsQueryCriteria): string {
     params.set('PatientID', criteria.patientId);
   }
   if (criteria.studyDateFrom) {
-    params.set('StudyDate', `>=${criteria.studyDateFrom}`);
+    params.append('StudyDate', `>=${criteria.studyDateFrom}`);
   }
   if (criteria.studyDateTo) {
-    params.set('StudyDate', `<=${criteria.studyDateTo}`);
+    params.append('StudyDate', `<=${criteria.studyDateTo}`);
   }
   if (criteria.modality) {
     params.set('Modality', criteria.modality);

@@ -70,6 +70,26 @@ export function isValidPacsBaseUrl(url: string): boolean {
   }
 }
 
+/**
+ * 混合内容提示（FR-13.9）：页面经 HTTPS 部署而服务器配置为 http:// 时，
+ * 浏览器会拦截请求（Mixed Content）。返回中文提示；非该场景返回 null。
+ * pageProtocol 缺省取当前页面协议（可注入，便于单测）。
+ */
+export function mixedContentWarning(
+  config: PacsServerConfig,
+  pageProtocol?: string,
+): string | null {
+  const protocol =
+    pageProtocol ?? (typeof window !== 'undefined' ? window.location.protocol : 'http:');
+  if (protocol === 'https:' && config.baseUrl.startsWith('http://')) {
+    return (
+      '应用以 HTTPS 部署，但服务器地址为 http://：浏览器将按混合内容（Mixed Content）拦截该请求。' +
+      '请改用 HTTPS 地址（网关需支持 TLS 终结，见 FR-13.10）。'
+    );
+  }
+  return null;
+}
+
 /** 校验配置可用性；返回中文错误原因，可用时返回 null */
 export function validatePacsServer(config: PacsServerConfig): string | null {
   if (config.baseUrl === '') {

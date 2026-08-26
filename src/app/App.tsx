@@ -6,7 +6,9 @@
  * - 序列面板：点击序列加载到当前激活视口；拖拽序列卡片到指定视口放置加载
  *   （FR-2.8 单击语义 + 拖拽扩展）；
  * - M7：i18n 上下文（zh 默认，FR-12.3）、设置面板（FR-12 子集）、
- *   快捷键帮助浮层（FR-11）、缩略图分批生成（NFR-2）。
+ *   快捷键帮助浮层（FR-11）、缩略图分批生成（NFR-2）；
+ * - M8：PACS 联网面板（FR-13 子集）：DICOMweb 配置/连接测试/QIDO 查询/
+ *   WADO 拉取入序列树（来源标记「远程」）。
  *
  * TODO(FR-12.3/NFR-9)：其余存量文案（进度条/toast/状态栏/错误报告等）迁入 i18n 词典。
  */
@@ -33,6 +35,12 @@ import {
   type ScannedFile,
 } from '../features/loading/directoryScan';
 import { ErrorReportPanel } from '../ui/components/ErrorReportPanel';
+import { PacsPanel } from '../ui/components/PacsPanel';
+import {
+  loadPacsServers,
+  savePacsServers,
+  type PacsServerConfig,
+} from '../features/pacs/config';
 import {
   buildSeriesStacks,
   type SeriesStack,
@@ -121,6 +129,9 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  /** PACS 服务器配置（FR-13.1 子集）：localStorage 持久化 */
+  const [pacsServers, setPacsServers] = useState<PacsServerConfig[]>(() => loadPacsServers());
+  const [showPacs, setShowPacs] = useState(false);
 
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -279,6 +290,42 @@ export default function App() {
   const cancelLoading = useCallback(() => {
     abortRef.current?.abort();
   }, []);
+
+  /** PACS 服务器配置变更：更新状态并持久化（FR-13.1，重启应用后仍在） */
+  const handlePacsServersChange = useCallback((servers: PacsServerConfig[]) => {
+    setPacsServers(servers);
+    savePacsServers(servers);
+  }, []);
+
+  /**
+   * 远程拉取的实例并入现有序列树（FR-13.6）：
+   * 与本地文件共用去重/注册表/序列堆栈管线（解析已在 PACS 面板完成）。
+   */
+  const handleRemoteStudies = useCallback(
+    (opened: OpenedDicomFile[]) => {
+      if (opened.length === 0) {
+        return;
+      }
+      const deduped = dedupeBySopUid(opened, knownUidsRef.current);
+      knownUidsRef.current = deduped.nextUids;
+      openedFilesRef.current = [...openedFilesRef.current, ...deduped.kept];
+      const stacks = buildSeriesStacks(openedFilesRef.current);
+      setSeriesList(stacks);
+      if (deduped.duplicateCount > 0) {
+        showToast(`已跳过 ${deduped.duplicateCount} 个重复文件`);
+      }
+      const anyLoaded = Object.values(assignmentsRef.current).some((uid) => uid !== null);
+      if (!anyLoaded) {
+        const firstUid = stacks[0]?.seriesUid ?? null;
+        setAssignments(
+          Object.fromEntries(ALL_VIEWPORT_IDS.map((id) => [id, id === 'vp-0' ? firstUid : null])),
+        );
+        setActiveViewportId('vp-0');
+      }
+      setLoadState({ status: 'loaded' });
+    },
+    [showToast],
+  );
 
   /** 「打开文件夹」：Chromium 走 File System Access API，其余浏览器走 webkitdirectory 输入框 */
   const openFolder = useCallback(async () => {
@@ -865,6 +912,16 @@ export default function App() {
           >
             {t('app.settings')}
           </button>
+          <button
+            type="button"
+            className={`tool-button${showPacs ? ' tool-button--active' : ''}`}
+            title="PACS 联网（DICOMweb 配置 / 查询 / 拉取）"
+            aria-haspopup="dialog"
+            aria-expanded={showPacs}
+            onClick={() => setShowPacs((prev) => !prev)}
+          >
+            PACS
+          </button>
         </header>
 
         {loadState.status === 'error' && (
@@ -981,6 +1038,14 @@ export default function App() {
             settings={settings}
             onChange={updateSettings}
             onClose={() => setShowSettings(false)}
+          />
+        )}
+        {showPacs && (
+          <PacsPanel
+            servers={pacsServers}
+            onServersChange={handlePacsServersChange}
+            onStudiesFetched={handleRemoteStudies}
+            onClose={() => setShowPacs(false)}
           />
         )}
 
