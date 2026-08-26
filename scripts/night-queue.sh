@@ -6,7 +6,7 @@ export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"
 cd /home/drliuhuan/DICOMViewer || exit 1
 mkdir -p /tmp/oc-night
 LOG=/tmp/oc-night/supervisor.log
-STOP_EPOCH=$(date -d '2026-08-26 08:00:00' +%s)
+STOP_EPOCH="${STOP_EPOCH:-$(date -d '2026-08-26 18:00:00' +%s)}"
 
 log(){ echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 

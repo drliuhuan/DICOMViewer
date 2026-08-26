@@ -29,6 +29,13 @@ export interface OpenedDicomFile {
   /** base imageId（无 frame 查询参数）；多帧展开见 buildStacks */
   baseImageId: string;
   summary: DicomInstanceSummary;
+  /** 远程来源标记（FR-13.5，PACS 拉取实例携带；本地文件恒为 undefined） */
+  remoteSource?: {
+    /** 所属服务器（配置显示名） */
+    serverName: string;
+    /** 检查号（StudyInstanceUID） */
+    studyUid: string;
+  };
 }
 
 /** 失败原因分类：非 DICOM 内容/类型（可预期跳过） vs 解析异常（坏文件） */

@@ -36,6 +36,11 @@ export interface SeriesStack {
   studyInstanceUid: string | undefined;
   studyDate: string | undefined;
   studyDescription: string | undefined;
+  /** 远程来源标记（FR-13.5，取自组内首个文件；本地序列恒为 undefined） */
+  remoteSource?: {
+    serverName: string;
+    studyUid: string;
+  };
 }
 
 /** 切片法向量：ImageOrientationPatient 行/列余弦的叉积（仅用于投影比较，无需归一化） */
@@ -184,6 +189,7 @@ export function buildSeriesStacks(opened: OpenedDicomFile[]): SeriesStack[] {
       studyInstanceUid: first.summary.studyInstanceUid,
       studyDate: first.summary.studyDate,
       studyDescription: first.summary.studyDescription,
+      remoteSource: first.remoteSource,
     });
   }
 
