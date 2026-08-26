@@ -71,6 +71,14 @@ import {
   initialMprLayout,
 } from '../features/mpr/mprLayout';
 import type { MprLayoutState } from '../features/mpr/mprLayout';
+import { Volume3dViewport } from '../features/volume3d/Volume3dViewport';
+import { checkVolume3dEligibility, hasWebGL2 } from '../features/volume3d/gate';
+import {
+  enterVolume3dLayout,
+  exitVolume3dLayout,
+  initialVolume3dLayout,
+} from '../features/volume3d/layout';
+import type { Volume3dLayoutState } from '../features/volume3d/layout';
 import {
   WW_WL_PRESETS,
   findPresetById,
@@ -143,6 +151,12 @@ export default function App() {
   const [activeViewportId, setActiveViewportId] = useState<string>('vp-0');
   /** MPR 三平面布局状态（FR-6.9）：on 时渲染 MprViewport，退出保留 2D 布局/加载状态 */
   const [mprLayout, setMprLayout] = useState<MprLayoutState>(initialMprLayout());
+  /** 3D 体绘制布局状态（FR-7.1）：on 时渲染 Volume3dViewport，退出保留 2D 布局/加载状态 */
+  const [vol3dLayout, setVol3dLayout] = useState<Volume3dLayoutState>(initialVolume3dLayout());
+  /** 视口 id → 最近应用的窗宽窗位（3D 联动 FR-7.3 落地：覆盖默认窗，重挂视口时保持） */
+  const [viewportWwWl, setViewportWwWl] = useState<Record<string, { ww: number; wl: number }>>(
+    {},
+  );
   /** 当前主拖动工具（null = 默认窗宽窗位） */
   const [primaryTool, setPrimaryTool] = useState<string>(ToolNames.windowLevel);
   const [showInfo, setShowInfo] = useState(true);
@@ -241,6 +255,16 @@ export default function App() {
   }, []);
   const handleUiChange = useCallback((id: string, ui: ViewportUiState) => {
     setUiMap((prev) => ({ ...prev, [id]: ui }));
+    // 记录最近应用的 WW/WL（3D 联动/重挂视口保持，FR-7.3）
+    if (ui.ww > 0 && Number.isFinite(ui.wl)) {
+      setViewportWwWl((prev) => {
+        const current = prev[id];
+        if (current && current.ww === ui.ww && current.wl === ui.wl) {
+          return prev;
+        }
+        return { ...prev, [id]: { ww: ui.ww, wl: ui.wl } };
+      });
+    }
   }, []);
 
   const activeApi = apisRef.current.get(activeViewportId) ?? null;
@@ -476,23 +500,45 @@ export default function App() {
     [activeStack],
   );
 
+  /** WebGL2 能力（FR-7.1，检测一次，供 3D 门槛/入口判定） */
+  const webgl2 = useMemo(() => hasWebGL2(), []);
+
+  /** 当前激活序列的 3D 门槛判定（FR-7.1，数据 + WebGL2） */
+  const activeVol3dGate = useMemo(
+    () => checkVolume3dEligibility(activeStack, webgl2),
+    [activeStack, webgl2],
+  );
+
   /** MPR 模式锁定的渲染序列（进入时快照；关闭/清空后为 null → 回落 2D 网格） */
   const mprStack =
     mprLayout.mode === 'on' && mprLayout.seriesUid !== null
       ? (stackByUid.get(mprLayout.seriesUid) ?? null)
       : null;
 
-  /** 指定堆栈的默认窗宽窗位（文件自带优先，其次模态预设） */
-  const getDefaultWwWl = useCallback((stack: SeriesStack | null) => {
-    if (stack === null) {
-      return undefined;
-    }
-    const summary = stack.items[0]?.summary;
-    return getDefaultWwWlForModality(summary?.modality ?? '', {
-      windowWidth: summary?.windowWidth,
-      windowCenter: summary?.windowCenter,
-    });
-  }, []);
+  /** 3D 模式锁定的渲染序列（进入时快照；关闭/清空后为 null → 回落 2D 网格） */
+  const vol3dStack =
+    vol3dLayout.mode === 'on' && vol3dLayout.seriesUid !== null
+      ? (stackByUid.get(vol3dLayout.seriesUid) ?? null)
+      : null;
+
+  /** 指定堆栈的默认窗宽窗位（文件自带优先，其次模态预设；3D 联动覆盖值最优先，FR-7.3） */
+  const getDefaultWwWl = useCallback(
+    (stack: SeriesStack | null, viewportId?: string) => {
+      if (stack === null) {
+        return undefined;
+      }
+      const override = viewportId !== undefined ? viewportWwWl[viewportId] : undefined;
+      if (override && override.ww > 0) {
+        return { ww: override.ww, wl: override.wl };
+      }
+      const summary = stack.items[0]?.summary;
+      return getDefaultWwWlForModality(summary?.modality ?? '', {
+        windowWidth: summary?.windowWidth,
+        windowCenter: summary?.windowCenter,
+      });
+    },
+    [viewportWwWl],
+  );
 
   const totalInstances = seriesList.reduce((sum, s) => sum + s.items.length, 0);
 
@@ -599,6 +645,10 @@ export default function App() {
       if (mprLayout.mode === 'on' && mprLayout.seriesUid === seriesUid) {
         setMprLayout(exitMprLayout(mprLayout));
       }
+      // 3D 锁定的是该序列时同步退出体绘制布局（FR-7.1）
+      if (vol3dLayout.mode === 'on' && vol3dLayout.seriesUid === seriesUid) {
+        setVol3dLayout(exitVolume3dLayout(vol3dLayout));
+      }
       // 从累积数据中移除该序列的实例，并撤销其 SOPInstanceUID 去重标记（允许重新打开）
       const removedFiles = openedFilesRef.current.filter(
         (file) => (file.summary.seriesInstanceUid ?? `__file__:${file.fileName}`) === seriesUid,
@@ -614,7 +664,7 @@ export default function App() {
       setSeriesList((prev) => prev.filter((s) => s.seriesUid !== seriesUid));
       void releaseSeries(stack).then(() => showToast('已关闭序列并释放内存'));
     },
-    [mprLayout, showToast, stackByUid],
+    [mprLayout, showToast, stackByUid, vol3dLayout],
   );
 
   /** 清空全部数据集（FR-2.9）：二次确认后释放所有缓存与注册表 */
@@ -626,6 +676,9 @@ export default function App() {
     if (mprLayout.mode === 'on') {
       setMprLayout(exitMprLayout(mprLayout));
     }
+    if (vol3dLayout.mode === 'on') {
+      setVol3dLayout(exitVolume3dLayout(vol3dLayout));
+    }
     openedFilesRef.current = [];
     knownUidsRef.current = new Set();
     setSeriesList([]);
@@ -634,7 +687,7 @@ export default function App() {
     setThumbnails({});
     setLoadState({ status: 'idle' });
     void releaseAll(seriesList).then(() => showToast('已清空全部数据'));
-  }, [mprLayout, seriesList, showToast]);
+  }, [mprLayout, seriesList, showToast, vol3dLayout]);
 
   const loadSeriesToViewport = useCallback(
     (seriesUid: string) => {
@@ -671,10 +724,38 @@ export default function App() {
     if (stack === null) {
       return;
     }
+    // 进入 MPR 时退出 3D（两种模式互斥，共用同一渲染引擎）
+    if (vol3dLayout.mode === 'on') {
+      setVol3dLayout(exitVolume3dLayout(vol3dLayout));
+    }
     setMprLayout(
       enterMprLayout(mprLayout, stack.seriesUid, LAYOUT_CONFIG[layout].cells),
     );
-  }, [mprLayout, stackByUid, assignments, activeViewportId, layout, showToast]);
+  }, [mprLayout, stackByUid, assignments, activeViewportId, layout, showToast, vol3dLayout]);
+
+  /** 一键「2D ⇄ 3D 体绘制」（FR-7.1）：进入时锁定量激活序列并快照 2D 布局 */
+  const toggleVol3d = useCallback(() => {
+    if (vol3dLayout.mode === 'on') {
+      setVol3dLayout(exitVolume3dLayout(vol3dLayout));
+      return;
+    }
+    const stack = stackByUid.get(assignments[activeViewportId] ?? '') ?? null;
+    const gate = checkVolume3dEligibility(stack, webgl2);
+    if (!gate.allowed) {
+      showToast(gate.message ?? '3D 不可用');
+      return;
+    }
+    if (stack === null) {
+      return;
+    }
+    // 进入 3D 时退出 MPR（两种模式互斥，共用同一渲染引擎）
+    if (mprLayout.mode === 'on') {
+      setMprLayout(exitMprLayout(mprLayout));
+    }
+    setVol3dLayout(
+      enterVolume3dLayout(vol3dLayout, stack.seriesUid, LAYOUT_CONFIG[layout].cells),
+    );
+  }, [vol3dLayout, stackByUid, assignments, activeViewportId, layout, showToast, webgl2, mprLayout]);
 
   // ── 全局快捷键（FR-11 子集）；文本输入框聚焦时不触发 ──
   useEffect(() => {
@@ -1004,6 +1085,19 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={`tool-button${vol3dLayout.mode === 'on' ? ' tool-button--active' : ''}`}
+            disabled={!activeVol3dGate.allowed && vol3dLayout.mode !== 'on'}
+            title={
+              vol3dLayout.mode === 'on'
+                ? '退出 3D 体绘制，返回 2D 布局'
+                : (activeVol3dGate.message ?? '3D 体绘制（vtk.js 光线投射）')
+            }
+            onClick={toggleVol3d}
+          >
+            3D
+          </button>
+          <button
+            type="button"
             className={`tool-button${showInfo ? ' tool-button--active' : ''}`}
             title="信息覆盖文字开关（I）"
             onClick={() => setShowInfo((prev) => !prev)}
@@ -1085,6 +1179,21 @@ export default function App() {
                 showInfo={showInfo}
                 onExitMpr={() => setMprLayout((prev) => exitMprLayout(prev))}
               />
+            ) : vol3dStack !== null ? (
+              <Volume3dViewport
+                key={vol3dStack.seriesUid}
+                stack={vol3dStack}
+                seriesUid={vol3dStack.seriesUid}
+                showInfo={showInfo}
+                linkedWwWl={viewportWwWl[activeViewportId]}
+                onSyncWwWlTo2D={(ww, wl) =>
+                  setViewportWwWl((prev) => ({
+                    ...prev,
+                    [activeViewportId]: { ww, wl },
+                  }))
+                }
+                onExitVolume3d={() => setVol3dLayout((prev) => exitVolume3dLayout(prev))}
+              />
             ) : (
             <div
               className="viewer-grid"
@@ -1100,7 +1209,7 @@ export default function App() {
                     key={id}
                     viewportId={id}
                     items={stack?.items ?? EMPTY_ITEMS}
-                    defaultWwWl={getDefaultWwWl(stack)}
+                    defaultWwWl={getDefaultWwWl(stack, id)}
                     showInfo={showInfo}
                     isActive={id === activeViewportId}
                     badgeLabel={
