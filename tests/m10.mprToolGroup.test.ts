@@ -44,6 +44,11 @@ vi.mock('@cornerstonejs/tools', () => {
     ZoomTool: defineTool('Zoom'),
     PanTool: defineTool('Pan'),
     StackScrollTool: defineTool('StackScroll'),
+    LengthTool: defineTool('Length'),
+    AngleTool: defineTool('Angle'),
+    RectangleROITool: defineTool('RectangleROI'),
+    EllipticalROITool: defineTool('EllipticalROI'),
+    ProbeTool: defineTool('Probe'),
     ToolGroupManager: {
       createToolGroup: vi.fn((engineId: string) => createFakeToolGroup(engineId)),
       destroyToolGroup: vi.fn(),
@@ -79,6 +84,11 @@ const MPR_TOOL_ORDER = [
   'Zoom',
   'Pan',
   'StackScroll',
+  'Length',
+  'Angle',
+  'RectangleROI',
+  'EllipticalROI',
+  'Probe',
   'Crosshairs',
 ];
 

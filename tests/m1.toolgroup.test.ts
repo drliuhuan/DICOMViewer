@@ -81,7 +81,7 @@ import { Enums, ToolGroupManager } from '@cornerstonejs/tools';
 import type { Types } from '@cornerstonejs/tools';
 import {
   ALL_TOOL_NAMES,
-  PLACEHOLDER_MEASUREMENT_TOOLS,
+  MEASUREMENT_TOOLS,
   ToolNames,
   createBoundToolGroup,
   syncToolBindings,
@@ -102,15 +102,15 @@ function lastFakeToolGroup(): FakeToolGroup {
 }
 
 describe('ALL_TOOL_NAMES', () => {
-  it('覆盖 4 个常驻工具与全部测量占位工具', () => {
+  it('覆盖 4 个常驻工具与全部测量工具', () => {
     expect(ALL_TOOL_NAMES).toEqual([
       ToolNames.windowLevel,
       ToolNames.zoom,
       ToolNames.pan,
       ToolNames.stackScroll,
-      ...PLACEHOLDER_MEASUREMENT_TOOLS,
+      ...MEASUREMENT_TOOLS,
     ]);
-    expect(PLACEHOLDER_MEASUREMENT_TOOLS).toHaveLength(5);
+    expect(MEASUREMENT_TOOLS).toHaveLength(5);
     expect(ALL_TOOL_NAMES).toHaveLength(9);
   });
 });

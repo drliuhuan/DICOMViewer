@@ -24,6 +24,7 @@ import {
   cache,
   getRenderingEngine,
   setVolumesForViewports,
+  utilities,
 } from '@cornerstonejs/core';
 import type { Types } from '@cornerstonejs/core';
 import { InfoOverlay } from '../../ui/components/InfoOverlay';
@@ -61,6 +62,7 @@ import {
   destroyMprToolGroup,
   initializeMprTools,
   planeTint,
+  syncMprToolBindings,
 } from './mprToolGroup';
 import { initializeDicomPipeline } from '../../dicom/init';
 
@@ -90,6 +92,10 @@ export interface MprViewportProps {
   stack: SeriesStack;
   seriesUid: string;
   showInfo: boolean;
+  /** 当前左键主工具（测量 FR-5.15 / 窗宽窗位 FR-6.6），由 App 工具栏同步 */
+  primaryTool?: string;
+  /** 面板「跳转」请求（FR-5.9）：切到指定平面视口帧；id 递增触发 */
+  jump?: { id: number; viewportId: string; sliceIndex: number } | null;
   /** 退出 MPR（返回 2D 布局，保留各视口加载状态） */
   onExitMpr: () => void;
   /** 测试注入点：volume 组装依赖（默认真实装配） */
@@ -108,6 +114,8 @@ export function MprViewport({
   stack,
   seriesUid,
   showInfo,
+  primaryTool = 'WindowLevel',
+  jump = null,
   onExitMpr,
   volumeDeps: _volumeDeps,
   engineId = MPR_ENGINE_ID,
@@ -134,6 +142,7 @@ export function MprViewport({
   const elementsRef = useRef<Partial<Record<MprPlaneKey, HTMLDivElement>>>({});
   const engineRef = useRef<RenderingEngine | null>(null);
   const volumeRef = useRef<{ volumeId: string; removeFrameIpp: () => void } | null>(null);
+  const toolGroupRef = useRef<ReturnType<typeof createMprToolGroup> | null>(null);
   const disposedRef = useRef(false);
 
   const publishPlaneUi = useCallback((plane: MprPlaneKey, partial: Partial<PlaneUi>) => {
@@ -152,6 +161,7 @@ export function MprViewport({
 
   const dispose = useCallback(() => {
     disposedRef.current = true;
+    toolGroupRef.current = null;
     const vol = volumeRef.current;
     if (vol) {
       try {
@@ -246,7 +256,7 @@ export function MprViewport({
           return;
         }
 
-        createMprToolGroup(engineId);
+        toolGroupRef.current = createMprToolGroup(engineId);
         setStatus('ready');
       } catch (error) {
         console.error('[MprViewport] 初始化失败', error);
@@ -262,6 +272,43 @@ export function MprViewport({
     // 挂载期一次性执行；volumeDeps 以稳定引用提供
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engineId, stack, seriesUid, volumeDeps]);
+
+  // 主工具联动（M10-D FR-5.15）：工具栏/快捷键切换测量工具时同步 MPR 三视口 ToolGroup
+  useEffect(() => {
+    if (status !== 'ready') {
+      return;
+    }
+    const group = toolGroupRef.current;
+    if (group) {
+      syncMprToolBindings(group, primaryTool);
+    }
+  }, [status, primaryTool]);
+
+  // 面板「跳转」→ 滚动对应平面到目标帧（FR-5.9/5.15）
+  useEffect(() => {
+    if (status !== 'ready' || jump === null) {
+      return;
+    }
+    const engine = engineRef.current;
+    if (!engine) {
+      return;
+    }
+    const viewport = engine.getViewport<Types.IVolumeViewport>(jump.viewportId);
+    if (!viewport) {
+      return;
+    }
+    try {
+      const current = typeof viewport.getSliceIndex === 'function' ? viewport.getSliceIndex() : undefined;
+      if (typeof current === 'number' && current !== jump.sliceIndex) {
+        utilities.scroll(
+          viewport as unknown as Parameters<typeof utilities.scroll>[0],
+          { delta: jump.sliceIndex - current },
+        );
+      }
+    } catch {
+      // 视口/引擎未就绪等瞬态：忽略
+    }
+  }, [status, jump]);
 
   // 视口事件订阅：翻层 / VOI / 相机 → 驱动每平面 UI 状态
   useEffect(() => {

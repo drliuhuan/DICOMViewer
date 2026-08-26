@@ -72,6 +72,7 @@ vi.mock('@cornerstonejs/tools', () => {
       addViewport: vi.fn(),
       addTool: vi.fn(),
       setToolActive: vi.fn(),
+      setToolPassive: vi.fn(),
     };
   }
   const groups: unknown[] = [];
@@ -87,6 +88,11 @@ vi.mock('@cornerstonejs/tools', () => {
     ZoomTool: defineTool('Zoom'),
     PanTool: defineTool('Pan'),
     StackScrollTool: defineTool('StackScroll'),
+    LengthTool: defineTool('Length'),
+    AngleTool: defineTool('Angle'),
+    RectangleROITool: defineTool('RectangleROI'),
+    EllipticalROITool: defineTool('EllipticalROI'),
+    ProbeTool: defineTool('Probe'),
     ToolGroupManager: {
       createToolGroup: vi.fn((id: string) => {
         const group = fakeToolGroup(id);

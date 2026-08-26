@@ -5,12 +5,18 @@
  * 文本输入框聚焦守卫（isTextInputTarget）同样可在 Node 下单测。
  */
 
-export type PrimaryToolKey = 'windowLevel' | 'pan' | 'zoom';
+export type PrimaryToolKey =
+  | 'windowLevel'
+  | 'pan'
+  | 'zoom'
+  | 'length'
+  | 'angle'
+  | 'rectangleRoi'
+  | 'ellipticalRoi';
 
 export type ShortcutAction =
   | { type: 'toggleInfo' }
   | { type: 'tool'; tool: PrimaryToolKey }
-  | { type: 'placeholderMeasurement' }
   | { type: 'fit' }
   | { type: 'zoomIn' }
   | { type: 'zoomOut' }
@@ -21,7 +27,7 @@ export type ShortcutAction =
   | { type: 'cancelTool' }
   | { type: 'cinePlaceholder' }
   | { type: 'crosshairPlaceholder' }
-  | { type: 'deleteAnnotationPlaceholder' };
+  | { type: 'deleteAnnotation' };
 
 export interface KeyEventLike {
   key: string;
@@ -64,9 +70,12 @@ export function resolveShortcut(event: KeyEventLike): ShortcutAction | null {
   }
   const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
 
-  // Shift+R：全局重置（Ctrl+R 与浏览器刷新冲突，需求五轮评审改键）
+  // Shift+R：全局重置（Ctrl+R 与浏览器刷新冲突，需求五轮评审改键）；
+  // R（无 Shift）= 矩形 ROI（FR-5.3）。
   if (key === 'r') {
-    return event.shiftKey ? { type: 'resetAll' } : { type: 'placeholderMeasurement' };
+    return event.shiftKey
+      ? { type: 'resetAll' }
+      : { type: 'tool', tool: 'rectangleRoi' };
   }
 
   switch (key) {
@@ -78,11 +87,13 @@ export function resolveShortcut(event: KeyEventLike): ShortcutAction | null {
       return { type: 'tool', tool: 'pan' };
     case 'z':
       return { type: 'tool', tool: 'zoom' };
-    // 测量工具占位：M3 提供
+    // 测量工具快捷键（M10-D 转正）：L 长度 / A 角度 / R 矩形 / O 椭圆（FR-5.1~5.4）
     case 'l':
+      return { type: 'tool', tool: 'length' };
     case 'a':
+      return { type: 'tool', tool: 'angle' };
     case 'o':
-      return { type: 'placeholderMeasurement' };
+      return { type: 'tool', tool: 'ellipticalRoi' };
     case 'f':
       return { type: 'fit' };
     // Cine 播放（FR-3.8 P1，后续里程碑）
@@ -93,10 +104,10 @@ export function resolveShortcut(event: KeyEventLike): ShortcutAction | null {
       return { type: 'crosshairPlaceholder' };
     case 'Escape':
       return { type: 'cancelTool' };
-    // 删除选中标注（FR-5.9/M3）
+    // 删除选中标注（FR-5.9）
     case 'Delete':
     case 'Backspace':
-      return { type: 'deleteAnnotationPlaceholder' };
+      return { type: 'deleteAnnotation' };
     default:
       break;
   }

@@ -11,8 +11,9 @@
  * 主工具 Active（Primary + 常驻绑定），其余三个仅保留各自互不冲突的
  * 常驻绑定（中键平移/Ctrl+滚轮缩放/滚轮翻页），见 syncToolBindings。
  *
- * 测量类工具（Length/Angle/RectangleROI/EllipticalROI/Probe）仅注册占位：
- * 激活入口由 UI 层拦截并提示「M3 提供」，避免快捷键体系返工。
+ * 测量类工具（Length/Angle/RectangleROI/EllipticalROI/Probe）已由 M10-D 转正：
+ * 可作为左键主工具激活（点击工具栏「长度/角度/矩形/椭圆」或快捷键
+ * L/A/R/O），激活后左键划线/拖动 ROI；主工具切换逻辑与窗宽窗位等一致。
  *
  * 触控映射（M9，FR-14.1）：Cornerstone3D 5.8.2 的 touch 事件监听在
  * init() 后随 enableElement 自动挂到视口元素（addEnabledElement →
@@ -65,10 +66,15 @@ export type PrimaryDragTool =
   | typeof ToolNames.windowLevel
   | typeof ToolNames.zoom
   | typeof ToolNames.pan
-  | typeof ToolNames.stackScroll;
+  | typeof ToolNames.stackScroll
+  | typeof ToolNames.length
+  | typeof ToolNames.angle
+  | typeof ToolNames.rectangleRoi
+  | typeof ToolNames.ellipticalRoi
+  | typeof ToolNames.probe;
 
-/** M3 占位测量工具（本阶段激活仅提示，不真正启用交互） */
-export const PLACEHOLDER_MEASUREMENT_TOOLS: readonly string[] = [
+/** 测量工具（M10-D 转正：FR-5.1~5.6 主工具入口） */
+export const MEASUREMENT_TOOLS: readonly string[] = [
   ToolNames.length,
   ToolNames.angle,
   ToolNames.rectangleRoi,
@@ -76,24 +82,28 @@ export const PLACEHOLDER_MEASUREMENT_TOOLS: readonly string[] = [
   ToolNames.probe,
 ];
 
-/** 左键可切换的「主」工具集合 */
-const PRIMARY_DRAG_TOOLS: readonly string[] = [
+/** 左键可切换为「主」工具的全部工具（常驻交互 + 测量） */
+const PRIMARY_SELECTABLE_TOOLS: readonly string[] = [
   ToolNames.windowLevel,
   ToolNames.zoom,
   ToolNames.pan,
   ToolNames.stackScroll,
+  ...MEASUREMENT_TOOLS,
 ];
 
 /**
- * 全部需挂载到 ToolGroup 的工具名（常驻 + 占位测量）。
+ * 全部需挂载到 ToolGroup 的工具名（常驻 + 测量）。
  * 注意：initializeTools() 的 addTool 只注册到全局工具表，
  * ToolGroup.addTool 才会把实例放入 _toolInstances 并填充
  * toolOptions——缺了它 setToolActive 会静默失效，事件派发
  * 找不到任何激活工具。
  */
 export const ALL_TOOL_NAMES: readonly string[] = [
-  ...PRIMARY_DRAG_TOOLS,
-  ...PLACEHOLDER_MEASUREMENT_TOOLS,
+  ToolNames.windowLevel,
+  ToolNames.zoom,
+  ToolNames.pan,
+  ToolNames.stackScroll,
+  ...MEASUREMENT_TOOLS,
 ];
 
 /** 各工具的常驻绑定（不随主工具切换而丢失） */
@@ -180,7 +190,7 @@ export function syncToolBindings(
   primary: string | null,
 ): void {
   const activeTool = primary ?? ToolNames.windowLevel;
-  for (const toolName of PRIMARY_DRAG_TOOLS) {
+  for (const toolName of PRIMARY_SELECTABLE_TOOLS) {
     // 剥离历史 Primary 绑定（避免 merge 残留），保留常驻绑定
     toolGroup.setToolPassive(toolName);
     const bindings =
@@ -191,7 +201,7 @@ export function syncToolBindings(
       // 与 passive 保留下的常驻绑定合并去重后即为目标绑定集合
       toolGroup.setToolActive(toolName, { bindings });
     }
-    // windowLevel 无常驻绑定且非主工具时停在 Passive：不再响应任何鼠标输入
+    // windowLevel / 测量工具 无常驻绑定且非主工具时停在 Passive：不再响应任何鼠标输入
   }
 }
 

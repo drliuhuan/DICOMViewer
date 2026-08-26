@@ -14,19 +14,25 @@
  * ToolGroup id 必须是引擎级唯一（既有注释强调）。
  */
 import {
+  AngleTool,
   CrosshairsTool,
+  EllipticalROITool,
   Enums,
+  LengthTool,
+  PanTool,
+  ProbeTool,
+  RectangleROITool,
+  StackScrollTool,
   ToolGroupManager,
   WindowLevelTool,
   ZoomTool,
-  PanTool,
-  StackScrollTool,
 } from '@cornerstonejs/tools';
 import type { Types } from '@cornerstonejs/tools';
 import { MPR_VIEWPORT_IDS, planeForViewportId } from './mprLayout';
 import type { MprPlaneKey } from './mprLayout';
 
 type MprToolGroup = Types.IToolGroup;
+type ToolBinding = Types.IToolBinding;
 
 /** 定位线颜色（医学惯例：红=矢状参考 / 绿=冠状 / 黄=轴向） */
 export const MPR_REFERENCE_LINE_COLORS: Readonly<Record<MprPlaneKey, string>> = {
@@ -85,6 +91,12 @@ export function createMprToolGroup(
   toolGroup.addTool(ZoomTool.toolName);
   toolGroup.addTool(PanTool.toolName);
   toolGroup.addTool(StackScrollTool.toolName);
+  // M10-D FR-5.15：MPR 三视口同样支持长度/角度/矩形/椭圆测量（复用同一套工具）
+  toolGroup.addTool(LengthTool.toolName);
+  toolGroup.addTool(AngleTool.toolName);
+  toolGroup.addTool(RectangleROITool.toolName);
+  toolGroup.addTool(EllipticalROITool.toolName);
+  toolGroup.addTool(ProbeTool.toolName);
   toolGroup.addTool(CrosshairsTool.toolName, {
     getReferenceLineColor: (targetViewportId: string) => {
       const plane = planeForViewportId(targetViewportId);
@@ -113,6 +125,54 @@ export function createMprToolGroup(
     bindings: [{ mouseButton: MouseBindings.Secondary }],
   });
   return toolGroup;
+}
+
+/** 可切换为「主工具」的 MPR 工具（左键 Primary；含测量工具 FR-5.15） */
+export const MPR_PRIMARY_SELECTABLE_TOOLS: readonly string[] = [
+  WindowLevelTool.toolName,
+  ZoomTool.toolName,
+  PanTool.toolName,
+  StackScrollTool.toolName,
+  LengthTool.toolName,
+  AngleTool.toolName,
+  RectangleROITool.toolName,
+  EllipticalROITool.toolName,
+  ProbeTool.toolName,
+];
+
+/** 各工具常驻绑定（不随主工具切换丢失；Crosshair 保持中键/右键语义不冲突） */
+const MPR_PERSISTENT_BINDINGS: Readonly<Record<string, readonly ToolBinding[]>> = {
+  [PanTool.toolName]: [{ mouseButton: MouseBindings.Auxiliary }],
+  [ZoomTool.toolName]: [
+    { mouseButton: MouseBindings.Wheel, modifierKey: KeyboardBindings.Ctrl },
+  ],
+  [StackScrollTool.toolName]: [{ mouseButton: MouseBindings.Wheel }],
+};
+
+/**
+ * 切换 MPR 三视口的左键主工具（FR-5.15 测量 / FR-6.6 窗宽窗位）。
+ * 与 2D toolSetup.syncToolBindings 同一套「先 setToolPassive 剥离 Primary，
+ * 再按目标重建」语义；Crosshair 保持 Secondary（右键拖线联动）永不参与切换。
+ */
+export function syncMprToolBindings(
+  toolGroup: MprToolGroup,
+  primary: string | null,
+): void {
+  const activeTool = primary ?? WindowLevelTool.toolName;
+  for (const toolName of MPR_PRIMARY_SELECTABLE_TOOLS) {
+    toolGroup.setToolPassive(toolName);
+    const bindings =
+      toolName === activeTool
+        ? [{ mouseButton: MouseBindings.Primary }, ...(MPR_PERSISTENT_BINDINGS[toolName] ?? [])]
+        : [...(MPR_PERSISTENT_BINDINGS[toolName] ?? [])];
+    if (bindings.length > 0) {
+      toolGroup.setToolActive(toolName, { bindings });
+    }
+  }
+  // Crosshair 恒以 Secondary 保持激活（右键拖线联动，FR-6.2）
+  toolGroup.setToolActive(CrosshairsTool.toolName, {
+    bindings: [{ mouseButton: MouseBindings.Secondary }],
+  });
 }
 
 /** 销毁 MPR ToolGroup（退出 MPR 时调用） */

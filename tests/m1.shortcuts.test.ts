@@ -26,14 +26,16 @@ describe('resolveShortcut', () => {
     expect(resolveShortcut({ key: 'I', ...base })).toEqual({ type: 'toggleInfo' });
   });
 
-  it('测量工具 W/L/A/R/O 中除 Shift+R 外均为占位动作', () => {
-    for (const key of ['l', 'a', 'o']) {
-      expect(resolveShortcut({ key, ...base })).toEqual({
-        type: 'placeholderMeasurement',
-      });
-    }
+  it('测量工具快捷键 L/A/R/O 映射到对应工具动作（FR-5.1~5.4，M10-D 转正）', () => {
+    expect(resolveShortcut({ key: 'l', ...base })).toEqual({ type: 'tool', tool: 'length' });
+    expect(resolveShortcut({ key: 'a', ...base })).toEqual({ type: 'tool', tool: 'angle' });
     expect(resolveShortcut({ key: 'r', ...base })).toEqual({
-      type: 'placeholderMeasurement',
+      type: 'tool',
+      tool: 'rectangleRoi',
+    });
+    expect(resolveShortcut({ key: 'o', ...base })).toEqual({
+      type: 'tool',
+      tool: 'ellipticalRoi',
     });
     expect(resolveShortcut({ ...base, key: 'r', shiftKey: true })).toEqual({
       type: 'resetAll',

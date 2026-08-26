@@ -19,7 +19,7 @@ export const ZH: Record<string, string> = {
   'help.row.windowLevel': '窗宽窗位工具',
   'help.row.pan': '平移工具',
   'help.row.zoom': '缩放工具',
-  'help.row.measure': '测量工具（后续里程碑提供）',
+  'help.row.measure': '测量工具：L 长度 / A 角度 / R 矩形 ROI / O 椭圆 ROI',
   'help.row.zoomKeys': '放大 / 缩小',
   'help.row.layout': '切换布局 1×1 / 1×2 / 2×2',
   'help.row.slice': '上一帧 / 下一帧',
@@ -27,7 +27,7 @@ export const ZH: Record<string, string> = {
   'help.row.reset': '重置视图',
   'help.row.cine': 'Cine 播放（后续里程碑提供）',
   'help.row.crosshair': 'MPR 定位线（后续里程碑提供）',
-  'help.row.delete': '删除选中标注（M3 提供）',
+  'help.row.delete': '删除选中标注',
   'help.row.esc': '取消当前工具操作',
 
   'settings.title': '设置',

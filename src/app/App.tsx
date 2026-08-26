@@ -22,7 +22,7 @@
  * TODO(FR-12.3/NFR-9)：其余存量文案（进度条/toast/状态栏/错误报告等）迁入 i18n 词典。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { cache } from '@cornerstonejs/core';
+import { cache, getRenderingEngine } from '@cornerstonejs/core';
 import {
   openDicomFiles,
   type LoadFailure,
@@ -62,7 +62,7 @@ import { SettingsPanel } from '../ui/components/SettingsPanel';
 import type { ViewportApi, ViewportUiState } from '../features/viewer/DicomViewport';
 import { ViewerCell } from '../features/viewer/ViewerCell';
 import { isSeriesDragEvent } from '../features/viewer/seriesDragDrop';
-import { PLACEHOLDER_MEASUREMENT_TOOLS, ToolNames } from '../features/viewer/toolSetup';
+import { ToolNames } from '../features/viewer/toolSetup';
 import { MprViewport } from '../features/mpr/MprViewport';
 import { checkMprEligibility } from '../features/mpr/mprGate';
 import {
@@ -102,6 +102,40 @@ import {
   detectDeviceProfile,
 } from '../features/perf/deviceProfile';
 import { I18nContext, translate, type I18nContextValue } from '../ui/i18n/i18n';
+import { AnnotationsPanel } from '../features/measure/AnnotationsPanel';
+import { CalibrationPanel } from '../features/measure/CalibrationPanel';
+import {
+  computeCalibrationScale,
+  hasUsablePixelSpacing,
+  calibratedSpacingForSeries,
+  clearSeriesCalibration,
+  setSeriesCalibration,
+  formatCalibrationScale,
+  type CalibrationCandidate,
+} from '../features/measure/calibration';
+import {
+  firstCachedStats,
+  snapshotAnnotations,
+  asAnnotationList,
+  toAnnotationExportFile,
+  serializeAnnotationsJson,
+  parseAnnotationExportFile,
+  frameFromImageId,
+  type AnnotationRow,
+  type AnnotationLike,
+} from '../features/measure/annotationModel';
+import {
+  buildAnnotationResolvers,
+  removeAnnotationsForSeries,
+  clearAllAnnotations,
+  type AnnotationStateOps,
+} from '../features/measure/annotationCleanup';
+import { buildMeasurementSr, SR_TOOL_TYPE_MAP } from '../features/measure/srExport';
+import { subscribeAnnotationEvents } from '../features/measure/annotationEvents';
+import {
+  ensureAnnotationRuntime,
+  getAnnotationRuntime,
+} from '../features/measure/annotationRuntime';
 
 type LoadState =
   | { status: 'idle' }
@@ -137,6 +171,51 @@ const EMPTY_UI: ViewportUiState = {
   wl: 0,
   zoom: 1,
 };
+
+/** cornerstone 标注运行时 addAnnotation 的安全包装 */
+function annAddOrEmpty(
+  rt: {
+    addAnnotation?: (annotation: unknown, selector: unknown) => string | void;
+  },
+  annotation: unknown,
+  selector: unknown,
+): string {
+  try {
+    return rt.addAnnotation?.(annotation, selector) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/** 取导入标注的 FrameOfReferenceUID（无则跳过该条不可恢复的标注） */
+function addImportedAnnotations(
+  entries: readonly unknown[],
+  addFn: (annotation: unknown, annotationGroupSelector: unknown) => string | void,
+): number {
+  let added = 0;
+  for (const entry of entries) {
+    if (entry === null || typeof entry !== 'object') {
+      continue;
+    }
+    const annotation = entry as {
+      annotationUID?: string;
+      metadata?: { FrameOfReferenceUID?: string; referencedImageId?: string };
+    };
+    const forUid = annotation.metadata?.FrameOfReferenceUID;
+    if (typeof forUid !== 'string' || forUid === '') {
+      continue;
+    }
+    const uid = annotation.annotationUID ?? `imported-${Math.random().toString(36).slice(2)}`;
+    const restored = { ...annotation, annotationUID: uid };
+    try {
+      addFn(restored, forUid);
+      added += 1;
+    } catch {
+      // 单个标注恢复失败不影响其余
+    }
+  }
+  return added;
+}
 
 export default function App() {
   const [loadState, setLoadState] = useState<LoadState>({ status: 'idle' });
@@ -178,6 +257,19 @@ export default function App() {
   const isMobile = useMediaQuery(MOBILE_MEDIA_QUERY);
   /** 移动端序列抽屉开合（仅窄屏使用） */
   const [seriesDrawerOpen, setSeriesDrawerOpen] = useState(false);
+  /** 标注管理面板开合 + 选中标注（FR-5.9） */
+  const [showAnnotationsPanel, setShowAnnotationsPanel] = useState(false);
+  const [selectedAnnotationUid, setSelectedAnnotationUid] = useState<string | null>(null);
+  /** 标注版本号：annotation 事件递增，驱动面板快照重算（FR-5.7 实时更新） */
+  const [annotationsVersion, setAnnotationsVersion] = useState(0);
+  /** 手动校准弹窗（FR-5.8） */
+  const [showCalibration, setShowCalibration] = useState(false);
+  /** MPR 跳转请求（FR-5.9/5.15：面板「跳转」→ 切到对应平面帧） */
+  const [mprJump, setMprJump] = useState<{
+    id: number;
+    viewportId: string;
+    sliceIndex: number;
+  } | null>(null);
 
   /** 文件打开能力（FR-14.3）：iOS 无文件夹选择 → 提示 + 多选文件引导 */
   const fileAccess = useMemo(
@@ -270,6 +362,70 @@ export default function App() {
   const activeApi = apisRef.current.get(activeViewportId) ?? null;
   const activeUi = uiMap[activeViewportId] ?? EMPTY_UI;
   const hasStack = activeUi.sliceCount > 0;
+
+  // ── 标注数据（FR-5.9/5.10/5.11）────────────────────────
+  /** cornerstone 标注状态操作（每次调用读运行时，兼容异步加载；缺 mocks 时 no-op） */
+  const annotationOps = useMemo<AnnotationStateOps>(
+    () => ({
+      getAllAnnotations: () =>
+        (getAnnotationRuntime().getAllAnnotations?.() as readonly AnnotationLike[] | undefined) ?? [],
+      removeAnnotation: (uid) => {
+        const rt = getAnnotationRuntime();
+        if (rt.removeAnnotation) {
+          rt.removeAnnotation(uid);
+          return true;
+        }
+        return false;
+      },
+      addAnnotation: (annotation, selector) =>
+        annAddOrEmpty(getAnnotationRuntime(), annotation, selector),
+    }),
+    [],
+  );
+
+  /** 异步加载 cornerstone 标注运行时；就绪后刷新面板（防首次渲染为空） */
+  useEffect(() => {
+    ensureAnnotationRuntime(() => setAnnotationsVersion((version) => version + 1));
+  }, []);
+
+  /** imageId → 序列/帧/SOP/间距 + seriesUid → 视口的解析器（由已加载序列构建） */
+  const annotationResolvers = useMemo(
+    () => buildAnnotationResolvers({ stacks: seriesList, assignments }),
+    [seriesList, assignments],
+  );
+
+  /** 面板行数据：物理可用性融合「原始间隔 + 会话校准」（FR-5.8） */
+  const annotationRows = useMemo<AnnotationRow[]>(() => {
+    const rows = snapshotAnnotations(asAnnotationList(annotationOps.getAllAnnotations()), {
+      ...annotationResolvers,
+      resolveSpacing: (imageId) => {
+        const raw = annotationResolvers.resolveSpacing(imageId);
+        if (raw !== undefined) {
+          return raw;
+        }
+        const series = annotationResolvers.resolveSeries(imageId);
+        return calibratedSpacingForSeries(series);
+      },
+      mprActive: mprLayout.mode === 'on',
+    });
+    return rows;
+    // annotationsVersion 由 annotation 事件递增，驱动实时刷新（FR-5.7）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotationsVersion, annotationOps, annotationResolvers, mprLayout.mode]);
+
+  /** 标注事件订阅：新增/拖动修改/删除/选中变更 → 刷新面板快照（FR-5.7/5.9） */
+  useEffect(() => {
+    const unsubscribe = subscribeAnnotationEvents(() => {
+      // 同步 cornerstone 选中态到面板选中行（FR-5.9 选中高亮）
+      const rt = getAnnotationRuntime();
+      const selected = rt.getSelected?.() ?? [];
+      setSelectedAnnotationUid(
+        selected.length > 0 ? (selected[selected.length - 1] ?? null) : null,
+      );
+      setAnnotationsVersion((version) => version + 1);
+    });
+    return unsubscribe;
+  }, []);
 
   // ── 文件打开 ────────────────────────────────────────
   const abortRef = useRef<AbortController | null>(null);
@@ -578,10 +734,6 @@ export default function App() {
   // ── 动作（工具栏 + 快捷键共用） ────────────────────
   const activateTool = useCallback(
     (toolName: string) => {
-      if (PLACEHOLDER_MEASUREMENT_TOOLS.includes(toolName)) {
-        showToast('该测量工具在 M3 提供');
-        return;
-      }
       const next =
         toolName !== ToolNames.windowLevel && primaryTool === toolName
           ? ToolNames.windowLevel
@@ -589,7 +741,7 @@ export default function App() {
       setPrimaryTool(next);
       apisRef.current.get(activeViewportId)?.setPrimaryTool(next);
     },
-    [activeViewportId, primaryTool, showToast],
+    [activeViewportId, primaryTool],
   );
 
   // 视口 WW/WL 变化（拖动/预设/重置）→ 同步输入框草稿与预设选中态
@@ -629,12 +781,24 @@ export default function App() {
     setAssignments((prev) => ({ ...prev, [viewportId]: seriesUid }));
   }, []);
 
-  /** 关闭单个序列：清空引用它的视口 + 释放图像缓存与内存缓冲（FR-2.9） */
+  /** 关闭单个序列：清空引用它的视口 + 释放图像缓存与内存缓冲（FR-2.9）；
+   * 同时清理该序列产生的标注与校准登记（FR-5.10）。 */
   const closeSeries = useCallback(
     (seriesUid: string) => {
       const stack = stackByUid.get(seriesUid);
       if (!stack) {
         return;
+      }
+      // 序列关闭 → 按 imageId 归属清理标注（前置：resolver 还持有该序列映射）
+      const removedCount = removeAnnotationsForSeries(
+        seriesUid,
+        annotationOps,
+        annotationResolvers.resolveSeries,
+      );
+      clearSeriesCalibration(seriesUid);
+      if (removedCount > 0) {
+        setSelectedAnnotationUid((prev) => prev ?? null);
+        setAnnotationsVersion((version) => version + 1);
       }
       setAssignments((prev) =>
         Object.fromEntries(
@@ -664,7 +828,7 @@ export default function App() {
       setSeriesList((prev) => prev.filter((s) => s.seriesUid !== seriesUid));
       void releaseSeries(stack).then(() => showToast('已关闭序列并释放内存'));
     },
-    [mprLayout, showToast, stackByUid, vol3dLayout],
+    [annotationOps, annotationResolvers, mprLayout, showToast, stackByUid, vol3dLayout],
   );
 
   /** 清空全部数据集（FR-2.9）：二次确认后释放所有缓存与注册表 */
@@ -681,13 +845,20 @@ export default function App() {
     }
     openedFilesRef.current = [];
     knownUidsRef.current = new Set();
+    // 清空标注状态与全部校准登记（FR-5.10/5.9）
+    clearAllAnnotations(annotationOps);
+    for (const stack of seriesList) {
+      clearSeriesCalibration(stack.seriesUid);
+    }
+    setSelectedAnnotationUid(null);
+    setAnnotationsVersion((version) => version + 1);
     setSeriesList([]);
     setFailures([]);
     setUiMap({});
     setThumbnails({});
     setLoadState({ status: 'idle' });
     void releaseAll(seriesList).then(() => showToast('已清空全部数据'));
-  }, [mprLayout, seriesList, showToast, vol3dLayout]);
+  }, [annotationOps, mprLayout, seriesList, showToast, vol3dLayout]);
 
   const loadSeriesToViewport = useCallback(
     (seriesUid: string) => {
@@ -757,6 +928,283 @@ export default function App() {
     );
   }, [vol3dLayout, stackByUid, assignments, activeViewportId, layout, showToast, webgl2, mprLayout]);
 
+  // ── 测量 / 标注（FR-5.1~5.13，M10-D） ─────────────────
+  /** 当前激活序列是否缺少可用像素间距（FR-5.8 触发校准入口） */
+  const activeSeriesNeedsCalibration = useMemo(() => {
+    const spacing = activeStack?.items[0]?.summary.pixelSpacing;
+    return !hasUsablePixelSpacing(spacing);
+  }, [activeStack]);
+
+  /** 校准候选 = 全局最新可用的长度线（像素长度；激活序列缺失间距时入口才可用） */
+  const calibrationCandidates = useMemo<CalibrationCandidate[]>(() => {
+    const all = asAnnotationList(annotationOps.getAllAnnotations());
+    const out: CalibrationCandidate[] = [];
+    for (const annotation of all) {
+      if ((annotation.metadata?.toolName ?? '') !== ToolNames.length) {
+        continue;
+      }
+      const stats = firstCachedStats(annotation);
+      const length = stats?.length;
+      if (typeof length !== 'number' || !Number.isFinite(length) || length <= 0) {
+        continue;
+      }
+      out.push({
+        annotationUID: annotation.annotationUID ?? '',
+        pixelLengthPx: length,
+        seriesUid: annotationResolvers.resolveSeries(
+          annotation.metadata?.referencedImageId ?? '',
+        ),
+      });
+    }
+    return out;
+  }, [annotationOps, annotationResolvers]);
+
+  /** 应用校准比例（FR-5.8）：cornerstone calibrateImageSpacing 逐 imageId 生效 */
+  const applyCalibrationScale = useCallback(
+    async (scaleMmPerPx: number, stack: NonNullable<typeof activeStack>) => {
+      setSeriesCalibration(stack.seriesUid, scaleMmPerPx);
+      try {
+        const tools = await import('@cornerstonejs/tools');
+        const engine = getRenderingEngine('dicom-viewer-m1-engine');
+        if (!engine) {
+          showToast('渲染引擎未就绪，校准失败');
+          return;
+        }
+        const calibrate = (tools as { utilities?: { calibrateImageSpacing: (imageId: string, engine: unknown, scale: number) => void } })
+          .utilities?.calibrateImageSpacing;
+        if (typeof calibrate !== 'function') {
+          showToast('校准能力不可用');
+          return;
+        }
+        for (const item of stack.items) {
+          calibrate(item.imageId, engine, scaleMmPerPx);
+        }
+        showToast(`校准成功：${formatCalibrationScale(scaleMmPerPx)}`);
+        setAnnotationsVersion((version) => version + 1);
+      } catch (error) {
+        console.error('[App] 校准失败', error);
+        showToast('校准失败，请重试');
+      }
+    },
+    [showToast],
+  );
+
+  /** 校准弹窗提交：选中长度线 + 真实长度 → 计算比例并应用 */
+  const handleCalibrationSubmit = useCallback(
+    (annotationUID: string, physicalLengthMm: number) => {
+      const candidate = calibrationCandidates.find((item) => item.annotationUID === annotationUID);
+      if (candidate === undefined || activeStack === null) {
+        showToast('校准失败：未找到对应长度测量线');
+        return;
+      }
+      const scale = computeCalibrationScale(candidate.pixelLengthPx, physicalLengthMm);
+      if (scale === null) {
+        showToast('校准失败：长度或物理尺寸无效');
+        return;
+      }
+      setShowCalibration(false);
+      void applyCalibrationScale(scale, activeStack);
+    },
+    [activeStack, calibrationCandidates, showToast, applyCalibrationScale],
+  );
+
+  /** 面板操作：选中/跳转/显隐/删除/清空（FR-5.9） */
+  const selectAnnotation = useCallback((row: AnnotationRow) => {
+    setSelectedAnnotationUid(row.annotationUID);
+    getAnnotationRuntime().setSelected?.(row.annotationUID, true);
+    setAnnotationsVersion((version) => version + 1);
+  }, []);
+
+  const jumpToAnnotation = useCallback(
+    (row: AnnotationRow) => {
+      setSelectedAnnotationUid(row.annotationUID);
+      getAnnotationRuntime().setSelected?.(row.annotationUID, true);
+      if (row.isMpr && mprLayout.mode === 'on' && row.viewportId !== null && row.frame !== null) {
+        setMprJump({
+          id: Date.now(),
+          viewportId: row.viewportId,
+          sliceIndex: row.frame - 1,
+        });
+        return;
+      }
+      // 2D 视口跳转：切到所属视口并置帧
+      const target = Object.keys(assignments).find(
+        (viewportId) => assignments[viewportId] === row.seriesUid,
+      );
+      if (target !== undefined && row.frame !== null) {
+        setActiveViewportId(target);
+        apisRef.current.get(target)?.setImageIndex(row.frame - 1);
+      }
+    },
+    [assignments, mprLayout.mode],
+  );
+
+  const toggleAnnotationVisibility = useCallback((row: AnnotationRow) => {
+    getAnnotationRuntime().setVisibility?.(row.annotationUID, !row.isVisible);
+    setAnnotationsVersion((version) => version + 1);
+  }, []);
+
+  const showAllAnnotations = useCallback(() => {
+    getAnnotationRuntime().showAll?.();
+    setAnnotationsVersion((version) => version + 1);
+  }, []);
+
+  const hideAllAnnotations = useCallback(() => {
+    const all = annotationOps.getAllAnnotations();
+    const rt = getAnnotationRuntime();
+    for (const annotation of all) {
+      const uid = annotation.annotationUID;
+      if (uid !== undefined && uid !== '') {
+        rt.setVisibility?.(uid, false);
+      }
+    }
+    setAnnotationsVersion((version) => version + 1);
+  }, [annotationOps]);
+
+  const deleteAnnotation = useCallback(
+    (uid: string) => {
+      annotationOps.removeAnnotation(uid);
+      if (selectedAnnotationUid === uid) {
+        setSelectedAnnotationUid(null);
+      }
+      setAnnotationsVersion((version) => version + 1);
+    },
+    [annotationOps, selectedAnnotationUid],
+  );
+
+  const clearAnnotations = useCallback(() => {
+    if (!window.confirm('确定要清空全部标注吗？')) {
+      return;
+    }
+    const removed = clearAllAnnotations(annotationOps);
+    setSelectedAnnotationUid(null);
+    setAnnotationsVersion((version) => version + 1);
+    showToast(removed > 0 ? `已清空 ${removed} 条标注` : '当前没有标注');
+  }, [annotationOps, showToast]);
+
+  /** 标注 JSON 导出（FR-5.11） */
+  const exportAnnotationsJson = useCallback(() => {
+    const all = asAnnotationList(annotationOps.getAllAnnotations());
+    if (all.length === 0) {
+      showToast('当前没有标注可导出');
+      return;
+    }
+    const file = toAnnotationExportFile(all, {
+      resolveSop: annotationResolvers.resolveSop,
+      resolveSeries: annotationResolvers.resolveSeries,
+      viewportsForSeries: annotationResolvers.viewportsForSeries,
+      resolveFrameIndex: annotationResolvers.resolveFrameIndex,
+      mprActive: mprLayout.mode === 'on',
+    });
+    const json = serializeAnnotationsJson(file);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `annotations-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    showToast(`已导出 ${file.annotations.length} 条标注 JSON`);
+  }, [annotationOps, annotationResolvers, mprLayout.mode, showToast]);
+
+  /** 标注 JSON 导入（FR-5.11）：回填 cornerstone annotation 状态 */
+  const importAnnotationsJson = useCallback(
+    async (file: File) => {
+      try {
+        const text = await file.text();
+        const imported = parseAnnotationExportFile(text);
+        if (imported === null) {
+          showToast('导入失败：JSON 格式无效');
+          return;
+        }
+        const entries = imported.annotations;
+        if (entries.length === 0) {
+          showToast('导入文件不含标注');
+          return;
+        }
+        const added = addImportedAnnotations(
+        entries.map((entry) => entry.annotation),
+        (annotation, selector) => {
+          annotationOps.addAnnotation?.(annotation, selector);
+        },
+      );
+        showToast(`已导入 ${added} 条标注`);
+        setAnnotationsVersion((version) => version + 1);
+      } catch (error) {
+        console.error('[App] 导入标注失败', error);
+        showToast('导入失败');
+      }
+    },
+    [showToast],
+  );
+
+  /** seriesUid → 首实例 StudyInstanceUID（SR 导出引用检查级） */
+  const studyUidBySeries = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const stack of seriesList) {
+      const studyUid = stack.items[0]?.summary.studyInstanceUid;
+      if (typeof studyUid === 'string' && studyUid !== '') {
+        map.set(stack.seriesUid, studyUid);
+      }
+    }
+    return map;
+  }, [seriesList]);
+
+  /** DICOM SR 导出（FR-5.12） */
+  const exportAnnotationsSr = useCallback(() => {
+    const all = asAnnotationList(annotationOps.getAllAnnotations());
+    const sr = buildMeasurementSr(all, {
+      resolveSop: (imageId) => {
+        const sop = annotationResolvers.resolveSop(imageId);
+        if (sop === null) {
+          return null;
+        }
+        const frame =
+          frameFromImageId(imageId) ?? (annotationResolvers.resolveFrameIndex(imageId) ?? 0) + 1;
+        return {
+          sopClassUID:
+            annotationResolvers.resolveSopClass(imageId) ?? '1.2.840.10008.5.1.4.1.1.2',
+          sopInstanceUID: sop,
+          frame,
+        };
+      },
+      resolveSeries: (imageId) => {
+        const series = annotationResolvers.resolveSeries(imageId);
+        if (series === null) {
+          return null;
+        }
+        return { studyInstanceUID: studyUidBySeries.get(series) ?? series, seriesInstanceUID: series };
+      },
+    });
+    if (sr === null) {
+      showToast('没有可导出的测量标注（需包含长度/角度/ROI）');
+      return;
+    }
+    const blob = new Blob([sr], { type: 'application/dicom' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `sr-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.dcm`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    showToast('已导出 DICOM SR');
+  }, [annotationOps, annotationResolvers, showToast, studyUidBySeries]);
+
+  /** 可导出的 SR 标注数（F-R5.12 面板按钮禁用态） */
+  const srExportableCount = useMemo(() => {
+    const all = asAnnotationList(annotationOps.getAllAnnotations());
+    let count = 0;
+    for (const annotation of all) {
+      if (SR_TOOL_TYPE_MAP[annotation.metadata?.toolName ?? ''] !== undefined) {
+        const imageId = annotation.metadata?.referencedImageId;
+        if (typeof imageId === 'string' && annotationResolvers.resolveSop(imageId) !== null) {
+          count += 1;
+        }
+      }
+    }
+    return count;
+  }, [annotationOps, annotationResolvers]);
+
   // ── 全局快捷键（FR-11 子集）；文本输入框聚焦时不触发 ──
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -775,9 +1223,6 @@ export default function App() {
           break;
         case 'tool':
           activateTool(ToolNames[action.tool]);
-          break;
-        case 'placeholderMeasurement':
-          showToast('该测量工具在 M3 提供');
           break;
         case 'fit':
           api?.fitToWindow();
@@ -806,8 +1251,10 @@ export default function App() {
         case 'crosshairPlaceholder':
           showToast('MPR 定位线将在后续里程碑提供（FR-6）');
           break;
-        case 'deleteAnnotationPlaceholder':
-          showToast('标注删除将在 M3 提供（FR-5.9）');
+        case 'deleteAnnotation':
+          if (selectedAnnotationUid !== null) {
+            deleteAnnotation(selectedAnnotationUid);
+          }
           break;
         case 'cancelTool':
           setPrimaryTool(ToolNames.windowLevel);
@@ -817,7 +1264,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activateTool, activeViewportId, showToast, switchLayout]);
+  }, [activateTool, activeViewportId, selectedAnnotationUid, deleteAnnotation, switchLayout]);
 
   const layoutConfig = LAYOUT_CONFIG[layout];
 
@@ -936,6 +1383,51 @@ export default function App() {
             >
               层滚动
             </button>
+          </div>
+
+          <div className="toolbar-group" role="group" aria-label="测量工具">
+            <button
+              type="button"
+              className={`tool-button${primaryTool === ToolNames.length ? ' tool-button--active' : ''}`}
+              title="长度测量（两点连线显示物理 mm，可拖动微调；快捷键 L）"
+              onClick={() => activateTool(ToolNames.length)}
+            >
+              长度
+            </button>
+            <button
+              type="button"
+              className={`tool-button${primaryTool === ToolNames.angle ? ' tool-button--active' : ''}`}
+              title="角度测量（三点两线段夹角 + 两线段长度；快捷键 A）"
+              onClick={() => activateTool(ToolNames.angle)}
+            >
+              角度
+            </button>
+            <button
+              type="button"
+              className={`tool-button${primaryTool === ToolNames.rectangleRoi ? ' tool-button--active' : ''}`}
+              title="矩形 ROI（均值/标准差/极值/面积 mm²/像素数；快捷键 R）"
+              onClick={() => activateTool(ToolNames.rectangleRoi)}
+            >
+              矩形
+            </button>
+            <button
+              type="button"
+              className={`tool-button${primaryTool === ToolNames.ellipticalRoi ? ' tool-button--active' : ''}`}
+              title="椭圆 ROI（统计项同矩形；快捷键 O）"
+              onClick={() => activateTool(ToolNames.ellipticalRoi)}
+            >
+              椭圆
+            </button>
+            {hasStack && activeSeriesNeedsCalibration && (
+              <button
+                type="button"
+                className="tool-button tool-button--warn"
+                title="像素间距缺失或为 0，无法计算物理尺寸：画长度线后手动校准"
+                onClick={() => setShowCalibration(true)}
+              >
+                校准
+              </button>
+            )}
           </div>
 
           {hasStack && (
@@ -1106,6 +1598,16 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={`tool-button${showAnnotationsPanel ? ' tool-button--active' : ''}`}
+            title="标注管理（列表/跳转/显隐/删除/导入导出）"
+            aria-haspopup="dialog"
+            aria-expanded={showAnnotationsPanel}
+            onClick={() => setShowAnnotationsPanel((prev) => !prev)}
+          >
+            标注
+          </button>
+          <button
+            type="button"
             className="tool-button"
             title="快捷键速查表"
             aria-haspopup="dialog"
@@ -1177,6 +1679,8 @@ export default function App() {
                 stack={mprStack}
                 seriesUid={mprStack.seriesUid}
                 showInfo={showInfo}
+                primaryTool={primaryTool}
+                jump={mprJump}
                 onExitMpr={() => setMprLayout((prev) => exitMprLayout(prev))}
               />
             ) : vol3dStack !== null ? (
@@ -1326,6 +1830,33 @@ export default function App() {
             onServersChange={handlePacsServersChange}
             onStudiesFetched={handleRemoteStudies}
             onClose={() => setShowPacs(false)}
+          />
+        )}
+        {showAnnotationsPanel && (
+          <AnnotationsPanel
+            open
+            onClose={() => setShowAnnotationsPanel(false)}
+            rows={annotationRows}
+            selectedUid={selectedAnnotationUid}
+            onSelect={selectAnnotation}
+            onJump={jumpToAnnotation}
+            onToggleVisibility={toggleAnnotationVisibility}
+            onShowAll={showAllAnnotations}
+            onHideAll={hideAllAnnotations}
+            onDelete={(row) => deleteAnnotation(row.annotationUID)}
+            onClear={clearAnnotations}
+            onExportJson={exportAnnotationsJson}
+            onImportJson={importAnnotationsJson}
+            canExportSr={srExportableCount > 0}
+            onExportSr={exportAnnotationsSr}
+          />
+        )}
+        {showCalibration && (
+          <CalibrationPanel
+            open
+            onClose={() => setShowCalibration(false)}
+            candidates={calibrationCandidates}
+            onSubmit={handleCalibrationSubmit}
           />
         )}
 

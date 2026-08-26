@@ -17,12 +17,12 @@ describe('M7 快捷键补全（FR-11）', () => {
     expect(resolveShortcut({ key: 'C', ...base })).toEqual({ type: 'crosshairPlaceholder' });
   });
 
-  it('Delete / Backspace → 删除标注占位动作（FR-5.9/M3）', () => {
+  it('Delete / Backspace → 删除选中标注（FR-5.9 转正）', () => {
     expect(resolveShortcut({ key: 'Delete', ...base })).toEqual({
-      type: 'deleteAnnotationPlaceholder',
+      type: 'deleteAnnotation',
     });
     expect(resolveShortcut({ key: 'Backspace', ...base })).toEqual({
-      type: 'deleteAnnotationPlaceholder',
+      type: 'deleteAnnotation',
     });
   });
 
