@@ -7,7 +7,7 @@
  */
 import { useCallback, useState } from 'react';
 import { DicomViewport } from './DicomViewport';
-import type { ViewportApi, ViewportUiState } from './DicomViewport';
+import type { MprReferenceCenter, ViewportApi, ViewportUiState } from './DicomViewport';
 import { isSeriesDragEvent, readSeriesUidFromDataTransfer } from './seriesDragDrop';
 import type { StackItem } from '../series/buildStacks';
 
@@ -25,6 +25,8 @@ interface ViewerCellProps {
   onUiChange: (viewportId: string, ui: ViewportUiState) => void;
   /** 序列卡片拖放到本视口时回调（携带 seriesUid） */
   onDropSeries?: (viewportId: string, seriesUid: string) => void;
+  /** MPR 参考线中心（FR-6.10）：仅与当前序列匹配时传递 */
+  referenceCenter?: MprReferenceCenter | null;
 }
 
 export function ViewerCell({
@@ -38,6 +40,7 @@ export function ViewerCell({
   registerApi,
   onUiChange,
   onDropSeries,
+  referenceCenter = null,
 }: ViewerCellProps) {
   const [isSeriesDropTarget, setIsSeriesDropTarget] = useState(false);
 
@@ -108,6 +111,7 @@ export function ViewerCell({
         showInfo={showInfo}
         onApiReady={handleApiReady}
         onUiChange={handleUiChange}
+        referenceCenter={referenceCenter}
       />
       {badgeLabel !== null && <div className="viewport-badge">{badgeLabel}</div>}
     </div>

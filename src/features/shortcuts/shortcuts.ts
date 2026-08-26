@@ -27,7 +27,10 @@ export type ShortcutAction =
   | { type: 'cancelTool' }
   | { type: 'cinePlaceholder' }
   | { type: 'crosshairPlaceholder' }
-  | { type: 'deleteAnnotation' };
+  | { type: 'deleteAnnotation' }
+  | { type: 'invert' }
+  | { type: 'rotateLeft' }
+  | { type: 'rotateRight' };
 
 export interface KeyEventLike {
   key: string;
@@ -78,9 +81,12 @@ export function resolveShortcut(event: KeyEventLike): ShortcutAction | null {
       : { type: 'tool', tool: 'rectangleRoi' };
   }
 
+  // Shift+I：反色（I 无 Shift 仍为信息覆盖 FR-4.1，不覆盖既有键位）
+  if (key === 'i') {
+    return event.shiftKey ? { type: 'invert' } : { type: 'toggleInfo' };
+  }
+
   switch (key) {
-    case 'i':
-      return { type: 'toggleInfo' };
     case 'w':
       return { type: 'tool', tool: 'windowLevel' };
     case 'p':
@@ -96,12 +102,17 @@ export function resolveShortcut(event: KeyEventLike): ShortcutAction | null {
       return { type: 'tool', tool: 'ellipticalRoi' };
     case 'f':
       return { type: 'fit' };
-    // Cine 播放（FR-3.8 P1，后续里程碑）
+    // Cine 播放（FR-3.8 P1）：空格键播放/暂停
     case ' ':
       return { type: 'cinePlaceholder' };
     // MPR 十字线（FR-6，后续里程碑）
     case 'c':
       return { type: 'crosshairPlaceholder' };
+    // 旋转当前视口（FR-3.10）：[ 逆时针 / ] 顺时针（90° 步进）
+    case '[':
+      return { type: 'rotateLeft' };
+    case ']':
+      return { type: 'rotateRight' };
     case 'Escape':
       return { type: 'cancelTool' };
     // 删除选中标注（FR-5.9）

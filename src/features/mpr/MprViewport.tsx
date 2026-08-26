@@ -11,11 +11,13 @@
  * - 挂载期构建共享 volume（mprVolume.buildMprVolume，含逐帧 IPP provider），
  *   卸载期销毁 ToolGroup / 视口并释放 volume 与 GPU 资源（FR-7.12 同类）。
  *
- * 待办（未做，FR-6.5 斜切 MPR / FR-6.10 参考线随动属于本里程碑 P1 子项）：
- *   TODO(FR-6.5)：斜切 MPR（任意角度重切）——CrosshairsTool 旋转手柄已含于
- *     定位线交互，但「画线生成斜切平面」的 UI 与重建链路本里程碑未实现。
- *   TODO(FR-6.10)：2D 单视口显示 MPR 平面位置参考线——需 ReferenceLinesTool
- *     绑定 2D Stack 视口并共享 FoR，本里程碑未实现。
+ * 完成状态（M10-E）：
+ *   FR-6.10 参考线随动已完成：退出 MPR 时 App 捕获轴向视口 camera.focalPoint
+ *   （readMprReferenceCenter），2D Stack 视口按当前切片绘制 MPR 三平面交线
+ *   （referenceLines.ts / ReferenceLinesOverlay，见 DicomViewport）。
+ *   TODO(FR-6.5)：斜切 MPR（在任一平面画线/旋转角度生成沿该方向的斜切平面，
+ *   任意角度重切）——采集 + 手绘线段 + oblique VolumeViewport 相机重建链路
+ *   成本较高，本里程碑未实施（CrosshairsTool 旋转手柄已含于定位线交互）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {

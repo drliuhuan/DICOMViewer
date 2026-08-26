@@ -19,6 +19,10 @@ import {
   initializeTools,
   syncToolBindings,
 } from './toolSetup';
+import { addRotation } from './viewTransform';
+import { computeReferenceLineSegments } from '../mpr/referenceLines';
+import type { LineSegment, MprPlaneKey, Point2, Point3 } from '../mpr/referenceLines';
+import { ReferenceLinesOverlay } from '../mpr/ReferenceLinesOverlay';
 import { TOUCH_TAP_EVENT } from './touchEvents';
 import { voiRangeFromWwWl } from './wwPresets';
 import { formatGrayValue, samplePixel } from '../../dicom/pixelProbe';
@@ -40,6 +44,18 @@ export interface ViewportUiState {
   wl: number;
   /** 相对适应窗口基线的缩放比例（1 ≈ 适应窗口） */
   zoom: number;
+  /** 反色显示（FR-3.9）：各视口独立 */
+  invert: boolean;
+  /** 视图旋转角度（°）：正值 = 逆时针（FR-3.10） */
+  rotation: number;
+}
+
+/** 切回 2D 后显示的 MPR 十字交点（FR-6.10） */
+export interface MprReferenceCenter {
+  /** 所属序列 UID（仅当视口显示该序列时绘制参考线） */
+  seriesUid: string;
+  /** MPR 十字交点世界坐标（轴向视口 camera.focalPoint） */
+  world: [number, number, number];
 }
 
 /** 命令式视口操作接口（工具栏/快捷键入口） */
@@ -57,7 +73,11 @@ export interface ViewportApi {
   oneToOne: () => void;
   /** 适应窗口（FR-3.4 双击 / FR-11 F 键） */
   fitToWindow: () => void;
-  /** 全局视图重置：WW/WL + 缩放 + 平移（FR-3.11，Shift+R） */
+  /** 切换反色显示（FR-3.9）：各视口独立 */
+  toggleInvert: () => void;
+  /** 旋转当前视口图像：delta 为增量角（°），正 = 逆时针（FR-3.10） */
+  rotateStep: (deltaDegrees: number) => void;
+  /** 全局视图重置：WW/WL + 缩放 + 平移 + 反色 + 旋转（FR-3.11，Shift+R） */
   resetView: () => void;
 }
 
@@ -71,8 +91,10 @@ interface DicomViewportProps {
   showInfo: boolean;
   /** 视口就绪后上报命令式 API（仅首次） */
   onApiReady?: (api: ViewportApi) => void;
-  /** UI 状态变化回调（层号 / 窗宽窗位 / 缩放） */
+  /** UI 状态变化回调（层号 / 窗宽窗位 / 缩放 / 反色 / 旋转） */
   onUiChange?: (ui: ViewportUiState) => void;
+  /** MPR 参考线中心（FR-6.10）：非空且与当前序列匹配时绘制参考线 */
+  referenceCenter?: MprReferenceCenter | null;
 }
 
 /** 取应用级单例渲染引擎（生命周期 = 应用，视口随组件挂载/卸载启用/禁用） */
@@ -90,6 +112,51 @@ function voiToWwWl(range: Types.VOIRange | undefined): { ww: number; wl: number 
   };
 }
 
+/** 读取视口旋转值：优先 cornerstone 公开 API getRotation，失败回退镜像值 */
+function readViewportRotation(viewport: object, fallback: number): number {
+  try {
+    const getter = (viewport as { getRotation?: () => number }).getRotation;
+    if (typeof getter === 'function') {
+      const value = getter.call(viewport);
+      if (Number.isFinite(value)) {
+        return value;
+      }
+    }
+  } catch {
+    // 视口禁用等瞬态：忽略
+  }
+  return fallback;
+}
+
+/** 写入视口旋转：setRotation 在 d.ts 声明为 protected，运行时为实例可调用方法 */
+function writeViewportRotation(viewport: object, degrees: number): boolean {
+  try {
+    const setter = (viewport as { setRotation?: (deg: number) => void }).setRotation;
+    if (typeof setter === 'function') {
+      setter.call(viewport, degrees);
+      return true;
+    }
+  } catch {
+    // 视口禁用等瞬态：忽略
+  }
+  return false;
+}
+
+/** 切片像素坐标 → 世界坐标（与 vtk imageData direction/spacing 布局对齐） */
+function pixelToWorld(
+  origin: Point3,
+  spacing: [number, number],
+  rowDir: Point3,
+  colDir: Point3,
+  p: Point2,
+): Point3 {
+  return [
+    origin[0] + p.x * spacing[0] * rowDir[0] + p.y * spacing[1] * colDir[0],
+    origin[1] + p.x * spacing[0] * rowDir[1] + p.y * spacing[1] * colDir[1],
+    origin[2] + p.x * spacing[0] * rowDir[2] + p.y * spacing[1] * colDir[2],
+  ];
+}
+
 export function DicomViewport({
   viewportId,
   items,
@@ -97,6 +164,7 @@ export function DicomViewport({
   showInfo,
   onApiReady,
   onUiChange,
+  referenceCenter = null,
 }: DicomViewportProps) {
   const imageIds = useMemo(() => items.map((item) => item.imageId), [items]);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -112,12 +180,28 @@ export function DicomViewport({
     ww: 0,
     wl: 0,
     zoom: 1,
+    invert: false,
+    rotation: 0,
   });
+  // 旋转值镜像（rotateStep/resetView 内读取当前值；cornerstone getRotation 兜底）
+  const rotationRef = useRef(0);
 
   // 默认窗宽窗位变化时保持 ref 同步（供 API 回调读取最新值）
   useEffect(() => {
     defaultWwWlRef.current = defaultWwWl;
   }, [defaultWwWl]);
+
+  // MPR 参考线（FR-6.10）：每次切片变化重算像素坐标线段；
+  // 画布坐标随相机在渲染时实时投影（worldToCanvas），平移/缩放/旋转自动保持。
+  const [referenceSegments, setReferenceSegments] = useState<
+    Array<{ plane: MprPlaneKey; segment: LineSegment }> | null
+  >(null);
+  const referenceTransformRef = useRef<{
+    origin: Point3;
+    rowDir: Point3;
+    colDir: Point3;
+    spacing: [number, number];
+  } | null>(null);
 
   // UI 快照更新：内容不变时返回原引用（避免无谓 re-render）。
   // 注意不得在 updater 内调用 onUiChange（父组件 setState）——
@@ -130,7 +214,9 @@ export function DicomViewport({
         prev.sliceCount === next.sliceCount &&
         prev.ww === next.ww &&
         prev.wl === next.wl &&
-        prev.zoom === next.zoom
+        prev.zoom === next.zoom &&
+        prev.invert === next.invert &&
+        prev.rotation === next.rotation
         ? prev
         : next;
     });
@@ -181,6 +267,37 @@ export function DicomViewport({
           setPrimaryTool: (toolName) => {
             if (toolGroup) {
               syncToolBindings(toolGroup, toolName);
+            }
+          },
+          toggleInvert: () => {
+            const vp = viewportRef.current;
+            if (!vp) {
+              return;
+            }
+            try {
+              const next = !(vp.getProperties().invert === true);
+              vp.setProperties({ invert: next });
+              vp.render();
+              publishUi({ invert: next });
+            } catch {
+              // 视口禁用等瞬态：忽略
+            }
+          },
+          rotateStep: (deltaDegrees) => {
+            const vp = viewportRef.current;
+            if (!vp || !Number.isFinite(deltaDegrees)) {
+              return;
+            }
+            try {
+              const current = readViewportRotation(vp, rotationRef.current);
+              const next = addRotation(current, deltaDegrees);
+              rotationRef.current = next;
+              if (writeViewportRotation(vp, next)) {
+                vp.render();
+              }
+              publishUi({ rotation: next });
+            } catch {
+              // 视口禁用等瞬态：忽略
             }
           },
           applyWwWl: (ww, wl) => {
@@ -250,8 +367,13 @@ export function DicomViewport({
             if (fallback) {
               vp.setProperties({ voiRange: voiRangeFromWwWl(fallback.ww, fallback.wl) });
             }
+            // 反色/旋转一并复位（FR-3.11 全局重置语义）
+            vp.setProperties({ invert: false });
+            rotationRef.current = 0;
+            writeViewportRotation(vp, 0);
             vp.resetCamera({ resetPan: true, resetZoom: true });
             vp.render();
+            publishUi({ invert: false, rotation: 0 });
           },
         });
         // 管线就绪：通知堆栈加载 effect 可以安全读取 viewportRef
@@ -346,6 +468,60 @@ export function DicomViewport({
       cancelled = true;
     };
   }, [imageIds, pipelineReady, publishUi]);
+
+  // MPR 参考线（FR-6.10）：参考中心非空且切片就绪时，计算 MPR 三平面与
+  // 当前切片的交线（切片像素坐标）；画布坐标在渲染时用 worldToCanvas 实时投影，
+  // 平移/缩放/旋转相机不须重算线段本身。
+  useEffect(() => {
+    if (!referenceCenter || !pipelineReady || imageIds.length === 0) {
+      referenceTransformRef.current = null;
+      setReferenceSegments(null);
+      return;
+    }
+    const vp = viewportRef.current;
+    if (!vp) {
+      return;
+    }
+    const imageData = (vp as { getImageData?: () => unknown }).getImageData?.();
+    if (!imageData) {
+      return;
+    }
+    const data = imageData as {
+      origin?: number[];
+      spacing?: number[];
+      dimensions?: number[];
+      direction?: number[];
+    };
+    const origin = data.origin;
+    const spacing = data.spacing;
+    const dimensions = data.dimensions;
+    const direction = data.direction;
+    if (!origin || !spacing || !dimensions || !direction || origin.length < 3) {
+      setReferenceSegments(null);
+      return;
+    }
+    const rowDir: Point3 = [direction[0] ?? 0, direction[1] ?? 0, direction[2] ?? 0];
+    const colDir: Point3 = [direction[3] ?? 0, direction[4] ?? 0, direction[5] ?? 0];
+    referenceTransformRef.current = {
+      origin: [origin[0] ?? 0, origin[1] ?? 0, origin[2] ?? 0],
+      rowDir,
+      colDir,
+      spacing: [spacing[0] ?? 1, spacing[1] ?? 1],
+    };
+    const segments = computeReferenceLineSegments(
+      {
+        origin: [origin[0] ?? 0, origin[1] ?? 0, origin[2] ?? 0],
+        rowDir,
+        colDir,
+        center: referenceCenter.world,
+        width: dimensions[0] ?? 0,
+        height: dimensions[1] ?? 0,
+      },
+      spacing[0] ?? 1,
+      spacing[1] ?? 1,
+    );
+    setReferenceSegments(segments.length > 0 ? segments : null);
+  }, [referenceCenter, pipelineReady, imageIds, uiState.sliceIndex]);
 
   // 布局/窗口尺寸变化时按容器新尺寸重排图像：
   // Cornerstone3D 仅在 enableElement 时按元素当时尺寸设置 canvas，
@@ -568,8 +744,49 @@ export function DicomViewport({
           wl={uiState.wl}
           zoomPercent={uiState.zoom * 100}
           probe={probe}
+          rotationDegrees={uiState.rotation}
         />
       )}
+      {referenceSegments !== null &&
+        referenceCenter !== null &&
+        renderError === null &&
+        (() => {
+          const transform = referenceTransformRef.current;
+          if (!transform) {
+            return null;
+          }
+          const toWorld = (p: Point2) =>
+            pixelToWorld(
+              transform.origin,
+              transform.spacing,
+              transform.rowDir,
+              transform.colDir,
+              p,
+            );
+          const project = (world: Point3): { x: number; y: number } | undefined => {
+            try {
+              const canvas = viewportRef.current?.worldToCanvas(world);
+              if (!canvas) {
+                return undefined;
+              }
+              return { x: canvas[0], y: canvas[1] };
+            } catch {
+              return undefined;
+            }
+          };
+          const overlaySegments = referenceSegments.map(({ plane, segment }) => ({
+            plane,
+            p1: segment.p1,
+            p2: segment.p2,
+          }));
+          return (
+            <ReferenceLinesOverlay
+              segments={overlaySegments}
+              toWorld={toWorld}
+              project={project}
+            />
+          );
+        })()}
       {canSlide && (
         <div className="slice-control">
           <span className="slice-indicator">

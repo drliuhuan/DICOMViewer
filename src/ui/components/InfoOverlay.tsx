@@ -5,9 +5,11 @@
  * - 右上：检查（日期/描述/机构）（FR-4.3）
  * - 左下：序列（模态/层号/层厚/矩阵）（FR-4.4）
  * - 右下：像素区（光标坐标/灰度值(HU)/WW/WL/缩放比例）（FR-4.5）
- * - 边缘中点：基于 ImageOrientationPatient 的解剖方向标签（FR-4.10）
- */
+* - 边缘中点：基于 ImageOrientationPatient 的解剖方向标签（FR-4.10）；
+*   视图旋转后（FR-3.10）标签随 rotationDegrees 正确更新。
+*/
 import { computeOrientationMarkers } from '../../features/viewer/orientation';
+import { rotateOrientationMarkers } from '../../features/viewer/viewTransform';
 import type { DicomInstanceSummary } from '../../dicom/parseDicom';
 import type { PixelProbe } from '../../features/viewer/probeTypes';
 
@@ -19,6 +21,8 @@ interface InfoOverlayProps {
   wl: number;
   zoomPercent: number;
   probe: PixelProbe | null;
+  /** 视图旋转角度（°）：正值 = 逆时针（FR-3.10），方向标记随之更新 */
+  rotationDegrees?: number;
 }
 
 /** DICOM DA (YYYYMMDD) → YYYY-MM-DD（供序列面板等处复用） */
@@ -47,8 +51,13 @@ export function InfoOverlay({
   wl,
   zoomPercent,
   probe,
+  rotationDegrees = 0,
 }: InfoOverlayProps) {
-  const markers = computeOrientationMarkers(summary.imageOrientationPatient);
+  const baseMarkers = computeOrientationMarkers(summary.imageOrientationPatient);
+  const markers =
+    baseMarkers === null
+      ? null
+      : rotateOrientationMarkers(baseMarkers, rotationDegrees);
   return (
     <div className="info-overlay" aria-hidden="true">
       {markers !== null && (

@@ -59,7 +59,14 @@ import { buildSeriesTree } from '../features/series/seriesTree';
 import { SeriesPanel } from '../ui/components/SeriesPanel';
 import { HelpOverlay } from '../ui/components/HelpOverlay';
 import { SettingsPanel } from '../ui/components/SettingsPanel';
-import type { ViewportApi, ViewportUiState } from '../features/viewer/DicomViewport';
+import { readMprReferenceCenter } from '../features/mpr/referenceLines';
+import {
+  CINE_DEFAULT_FPS,
+  CINE_FPS_MAX,
+  CINE_FPS_MIN,
+  CinePlayer,
+} from '../features/cine/cine';
+import type { MprReferenceCenter, ViewportApi, ViewportUiState } from '../features/viewer/DicomViewport';
 import { ViewerCell } from '../features/viewer/ViewerCell';
 import { isSeriesDragEvent } from '../features/viewer/seriesDragDrop';
 import { ToolNames } from '../features/viewer/toolSetup';
@@ -170,7 +177,12 @@ const EMPTY_UI: ViewportUiState = {
   ww: 0,
   wl: 0,
   zoom: 1,
+  invert: false,
+  rotation: 0,
 };
+
+/** 视口 Cine 会话默认参数（FR-3.8） */
+const CINE_DEFAULTS = { fps: CINE_DEFAULT_FPS, loop: true, reverse: false, playing: false };
 
 /** cornerstone 标注运行时 addAnnotation 的安全包装 */
 function annAddOrEmpty(
@@ -283,6 +295,19 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const apisRef = useRef<Map<string, ViewportApi>>(new Map());
+  /** uiMap 镜像：供 CinePlayer 定时回调等异步流程读取最新帧状态 */
+  const uiMapRef = useRef(uiMap);
+  useEffect(() => {
+    uiMapRef.current = uiMap;
+  }, [uiMap]);
+  /** Cine 播放器实例（每视口一个，FR-3.8） */
+  const cinePlayersRef = useRef<Map<string, CinePlayer>>(new Map());
+  /** 视口 id → Cine 会话 UI 状态（播放/速度/循环，供工具栏同步） */
+  const [cineUi, setCineUi] = useState<
+    Record<string, { playing: boolean; fps: number; loop: boolean; reverse: boolean }>
+  >({});
+  /** 切回 2D 后保留的 MPR 十字交点参考线（FR-6.10） */
+  const [mprRefCenter, setMprRefCenter] = useState<MprReferenceCenter | null>(null);
 
   // webkitdirectory/directory 属性 React 不在类型中支持，挂载时手动设置（FR-1.2 Firefox/Safari 路径）
   useEffect(() => {
@@ -362,6 +387,8 @@ export default function App() {
   const activeApi = apisRef.current.get(activeViewportId) ?? null;
   const activeUi = uiMap[activeViewportId] ?? EMPTY_UI;
   const hasStack = activeUi.sliceCount > 0;
+  /** 当前激活视口的 Cine 会话 UI（FR-3.8） */
+  const activeCine = cineUi[activeViewportId] ?? CINE_DEFAULTS;
 
   // ── 标注数据（FR-5.9/5.10/5.11）────────────────────────
   /** cornerstone 标注状态操作（每次调用读运行时，兼容异步加载；缺 mocks 时 no-op） */
@@ -744,6 +771,87 @@ export default function App() {
     [activeViewportId, primaryTool],
   );
 
+  // ── Cine 播放（FR-3.8，M10-E）────────────────────────
+  /** 取（或创建）指定视口的 CinePlayer；宿主回调全部经 ref 读取最新状态 */
+  const getCinePlayer = useCallback((viewportId: string): CinePlayer => {
+    let player = cinePlayersRef.current.get(viewportId);
+    if (player) {
+      return player;
+    }
+    player = new CinePlayer(
+      {
+        getFrameCount: () => uiMapRef.current[viewportId]?.sliceCount ?? 0,
+        getCurrentIndex: () => uiMapRef.current[viewportId]?.sliceIndex ?? 0,
+        onFrame: (index) => {
+          apisRef.current.get(viewportId)?.setImageIndex(index);
+        },
+        onStateChange: (state) => {
+          setCineUi((prev) => {
+            const cur = prev[viewportId];
+            if (
+              cur &&
+              cur.playing === state.playing &&
+              cur.fps === state.fps &&
+              cur.loop === state.loop &&
+              cur.reverse === state.reverse
+            ) {
+              return prev;
+            }
+            return {
+              ...prev,
+              [viewportId]: {
+                playing: state.playing,
+                fps: state.fps,
+                loop: state.loop,
+                reverse: state.reverse,
+              },
+            };
+          });
+        },
+      },
+      { fps: CINE_DEFAULT_FPS, loop: true },
+    );
+    cinePlayersRef.current.set(viewportId, player);
+    return player;
+  }, []);
+
+  const stopAllCine = useCallback(() => {
+    cinePlayersRef.current.forEach((player) => player.stop());
+  }, []);
+
+  const toggleCine = useCallback(
+    (viewportId: string) => {
+      const count = uiMapRef.current[viewportId]?.sliceCount ?? 0;
+      if (count <= 1) {
+        showToast('当前序列只有一帧，无需 Cine 播放');
+        return;
+      }
+      getCinePlayer(viewportId).togglePlay();
+    },
+    [getCinePlayer, showToast],
+  );
+
+  const stopCine = useCallback(
+    (viewportId: string) => {
+      getCinePlayer(viewportId).stop();
+    },
+    [getCinePlayer],
+  );
+
+  const setCineSpeed = useCallback(
+    (viewportId: string, fps: number) => {
+      getCinePlayer(viewportId).setFps(fps);
+    },
+    [getCinePlayer],
+  );
+
+  const setCineLoop = useCallback(
+    (viewportId: string, loop: boolean) => {
+      getCinePlayer(viewportId).setLoop(loop);
+    },
+    [getCinePlayer],
+  );
+
   // 视口 WW/WL 变化（拖动/预设/重置）→ 同步输入框草稿与预设选中态
   useEffect(() => {
     setWwDraft(String(activeUi.ww));
@@ -809,6 +917,10 @@ export default function App() {
       if (mprLayout.mode === 'on' && mprLayout.seriesUid === seriesUid) {
         setMprLayout(exitMprLayout(mprLayout));
       }
+      // 关闭的是参考线所属序列时清除参考线（FR-6.10）
+      if (mprRefCenter !== null && mprRefCenter.seriesUid === seriesUid) {
+        setMprRefCenter(null);
+      }
       // 3D 锁定的是该序列时同步退出体绘制布局（FR-7.1）
       if (vol3dLayout.mode === 'on' && vol3dLayout.seriesUid === seriesUid) {
         setVol3dLayout(exitVolume3dLayout(vol3dLayout));
@@ -828,7 +940,7 @@ export default function App() {
       setSeriesList((prev) => prev.filter((s) => s.seriesUid !== seriesUid));
       void releaseSeries(stack).then(() => showToast('已关闭序列并释放内存'));
     },
-    [annotationOps, annotationResolvers, mprLayout, showToast, stackByUid, vol3dLayout],
+    [annotationOps, annotationResolvers, mprLayout, mprRefCenter, showToast, stackByUid, vol3dLayout],
   );
 
   /** 清空全部数据集（FR-2.9）：二次确认后释放所有缓存与注册表 */
@@ -836,6 +948,8 @@ export default function App() {
     if (!window.confirm('确定要清空所有已加载的数据吗？将释放全部图像缓存与内存。')) {
       return;
     }
+    stopAllCine();
+    setMprRefCenter(null);
     setAssignments(Object.fromEntries(ALL_VIEWPORT_IDS.map((id) => [id, null])));
     if (mprLayout.mode === 'on') {
       setMprLayout(exitMprLayout(mprLayout));
@@ -858,7 +972,7 @@ export default function App() {
     setThumbnails({});
     setLoadState({ status: 'idle' });
     void releaseAll(seriesList).then(() => showToast('已清空全部数据'));
-  }, [annotationOps, mprLayout, seriesList, showToast, vol3dLayout]);
+  }, [annotationOps, mprLayout, seriesList, showToast, stopAllCine, vol3dLayout]);
 
   const loadSeriesToViewport = useCallback(
     (seriesUid: string) => {
@@ -872,18 +986,35 @@ export default function App() {
     if (key === undefined) {
       return;
     }
+    // 布局切换：停止全部 Cine 播放，避免隐藏视口继续空转
+    stopAllCine();
     setLayout(key);
     setActiveViewportId((prev) =>
       ALL_VIEWPORT_IDS.slice(0, cells).includes(prev as (typeof ALL_VIEWPORT_IDS)[number])
         ? prev
         : 'vp-0',
     );
-  }, []);
+  }, [stopAllCine]);
 
   /** 一键「单轴向 ⇄ 三平面」（FR-6.9）：进入时锁定量激活序列并快照 2D 布局 */
+  /**
+   * 退出 MPR 前捕获十字交点 → 2D 视口画参考线（FR-6.10）。
+   * 在卸载 MprViewport（disableElement）之前同步读取轴向视口 camera，故须
+   * 在 onExitMpr 与工具栏 toggleMpr 两条退出路径都显式调用，不能放在 effect。
+   */
+  const exitMprAndCapture = useCallback(() => {
+    const seriesUid = mprLayout.seriesUid;
+    const engine = getRenderingEngine('dicom-viewer-m1-engine');
+    const center = readMprReferenceCenter(engine as never);
+    if (center !== null && seriesUid !== null) {
+      setMprRefCenter({ seriesUid, world: center });
+    }
+    setMprLayout((prev) => exitMprLayout(prev));
+  }, [mprLayout]);
+
   const toggleMpr = useCallback(() => {
     if (mprLayout.mode === 'on') {
-      setMprLayout(exitMprLayout(mprLayout));
+      exitMprAndCapture();
       return;
     }
     const stack = stackByUid.get(assignments[activeViewportId] ?? '') ?? null;
@@ -899,10 +1030,13 @@ export default function App() {
     if (vol3dLayout.mode === 'on') {
       setVol3dLayout(exitVolume3dLayout(vol3dLayout));
     }
+    // 进入 MPR：停止 2D Cine 播放并清除旧参考线
+    stopAllCine();
+    setMprRefCenter(null);
     setMprLayout(
       enterMprLayout(mprLayout, stack.seriesUid, LAYOUT_CONFIG[layout].cells),
     );
-  }, [mprLayout, stackByUid, assignments, activeViewportId, layout, showToast, vol3dLayout]);
+  }, [mprLayout, stackByUid, assignments, activeViewportId, layout, showToast, vol3dLayout, stopAllCine, exitMprAndCapture]);
 
   /** 一键「2D ⇄ 3D 体绘制」（FR-7.1）：进入时锁定量激活序列并快照 2D 布局 */
   const toggleVol3d = useCallback(() => {
@@ -923,10 +1057,12 @@ export default function App() {
     if (mprLayout.mode === 'on') {
       setMprLayout(exitMprLayout(mprLayout));
     }
+    // 进入 3D：停止 2D Cine 播放
+    stopAllCine();
     setVol3dLayout(
       enterVolume3dLayout(vol3dLayout, stack.seriesUid, LAYOUT_CONFIG[layout].cells),
     );
-  }, [vol3dLayout, stackByUid, assignments, activeViewportId, layout, showToast, webgl2, mprLayout]);
+  }, [vol3dLayout, stackByUid, assignments, activeViewportId, layout, showToast, webgl2, mprLayout, stopAllCine]);
 
   // ── 测量 / 标注（FR-5.1~5.13，M10-D） ─────────────────
   /** 当前激活序列是否缺少可用像素间距（FR-5.8 触发校准入口） */
@@ -1246,7 +1382,17 @@ export default function App() {
           api?.resetView();
           break;
         case 'cinePlaceholder':
-          showToast('Cine 播放将在后续里程碑提供（FR-3.8）');
+          // FR-3.8：空格键 Cine 播放/暂停（动作名保留占位时代命名）
+          toggleCine(activeViewportId);
+          break;
+        case 'invert':
+          api?.toggleInvert();
+          break;
+        case 'rotateLeft':
+          api?.rotateStep(90);
+          break;
+        case 'rotateRight':
+          api?.rotateStep(-90);
           break;
         case 'crosshairPlaceholder':
           showToast('MPR 定位线将在后续里程碑提供（FR-6）');
@@ -1264,7 +1410,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activateTool, activeViewportId, selectedAnnotationUid, deleteAnnotation, switchLayout]);
+  }, [activateTool, activeViewportId, selectedAnnotationUid, deleteAnnotation, switchLayout, toggleCine]);
 
   const layoutConfig = LAYOUT_CONFIG[layout];
 
@@ -1528,10 +1674,34 @@ export default function App() {
               <button
                 type="button"
                 className="tool-button"
-                title="重置视图：窗宽窗位+缩放+平移（Shift+R）"
+                title="重置视图：窗宽窗位+缩放+平移+反色+旋转（Shift+R）"
                 onClick={() => activeApi?.resetView()}
               >
                 重置视图
+              </button>
+              <button
+                type="button"
+                className={`tool-button${activeUi.invert ? ' tool-button--active' : ''}`}
+                title="反色显示（Shift+I，各视口独立）"
+                onClick={() => activeApi?.toggleInvert()}
+              >
+                反色
+              </button>
+              <button
+                type="button"
+                className="tool-button"
+                title="逆时针旋转 90°（[）"
+                onClick={() => activeApi?.rotateStep(90)}
+              >
+                ⟲ 逆时针
+              </button>
+              <button
+                type="button"
+                className="tool-button"
+                title="顺时针旋转 90°（]）"
+                onClick={() => activeApi?.rotateStep(-90)}
+              >
+                ⟳ 顺时针
               </button>
             </div>
           )}
@@ -1559,6 +1729,50 @@ export default function App() {
               >
                 ▶
               </button>
+            </div>
+          )}
+
+          {hasStack && activeUi.sliceCount > 1 && (
+            <div className="toolbar-group" role="group" aria-label="Cine 播放">
+              <button
+                type="button"
+                className={`tool-button${activeCine.playing ? ' tool-button--active' : ''}`}
+                title="播放/暂停（空格键）"
+                onClick={() => toggleCine(activeViewportId)}
+              >
+                {activeCine.playing ? '暂停' : '播放'}
+              </button>
+              <button
+                type="button"
+                className="tool-button"
+                title="停止并返回首帧"
+                onClick={() => stopCine(activeViewportId)}
+              >
+                停止
+              </button>
+              <label className="cine-field">
+                速度
+                <input
+                  type="range"
+                  className="cine-speed-slider"
+                  min={CINE_FPS_MIN}
+                  max={CINE_FPS_MAX}
+                  step={1}
+                  value={activeCine.fps}
+                  onChange={(event) => setCineSpeed(activeViewportId, Number(event.target.value))}
+                  aria-label="Cine 播放速度（帧/秒）"
+                />
+                <span className="cine-fps">{activeCine.fps} fps</span>
+              </label>
+              <label className="cine-field cine-loop-field">
+                <input
+                  type="checkbox"
+                  className="cine-loop-input"
+                  checked={activeCine.loop}
+                  onChange={(event) => setCineLoop(activeViewportId, event.target.checked)}
+                />
+                循环
+              </label>
             </div>
           )}
 
@@ -1681,7 +1895,7 @@ export default function App() {
                 showInfo={showInfo}
                 primaryTool={primaryTool}
                 jump={mprJump}
-                onExitMpr={() => setMprLayout((prev) => exitMprLayout(prev))}
+                onExitMpr={exitMprAndCapture}
               />
             ) : vol3dStack !== null ? (
               <Volume3dViewport
@@ -1725,6 +1939,11 @@ export default function App() {
                     registerApi={registerApi}
                     onUiChange={handleUiChange}
                     onDropSeries={loadSeriesTo}
+                    referenceCenter={
+                      mprRefCenter !== null && mprRefCenter.seriesUid === assignments[id]
+                        ? mprRefCenter
+                        : null
+                    }
                   />
                 );
               })}

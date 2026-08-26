@@ -186,6 +186,55 @@ body {
   cursor: pointer;
 }
 
+/* ── Cine 播放工具（FR-3.8） ─────────────────── */
+.cine-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cine-speed-slider {
+  width: 90px;
+  height: 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.cine-fps {
+  color: var(--text);
+  font-size: 12px;
+  min-width: 42px;
+  text-align: right;
+}
+
+.cine-loop-field {
+  cursor: pointer;
+}
+
+.cine-loop-input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ── MPR 参考线叠加层（FR-6.10） ─────────────── */
+.reference-lines-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  overflow: hidden;
+}
+
+.reference-line {
+  position: absolute;
+  height: 1px;
+  transform-origin: 50% 50%;
+  contain: strict;
+}
+
 /* ── 轻提示（占位工具等） ───────────────── */
 .toast {
   position: fixed;
