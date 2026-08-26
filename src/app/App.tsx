@@ -63,6 +63,14 @@ import type { ViewportApi, ViewportUiState } from '../features/viewer/DicomViewp
 import { ViewerCell } from '../features/viewer/ViewerCell';
 import { isSeriesDragEvent } from '../features/viewer/seriesDragDrop';
 import { PLACEHOLDER_MEASUREMENT_TOOLS, ToolNames } from '../features/viewer/toolSetup';
+import { MprViewport } from '../features/mpr/MprViewport';
+import { checkMprEligibility } from '../features/mpr/mprGate';
+import {
+  enterMprLayout,
+  exitMprLayout,
+  initialMprLayout,
+} from '../features/mpr/mprLayout';
+import type { MprLayoutState } from '../features/mpr/mprLayout';
 import {
   WW_WL_PRESETS,
   findPresetById,
@@ -133,6 +141,8 @@ export default function App() {
   );
   const [layout, setLayout] = useState<LayoutKey>('1x1');
   const [activeViewportId, setActiveViewportId] = useState<string>('vp-0');
+  /** MPR 三平面布局状态（FR-6.9）：on 时渲染 MprViewport，退出保留 2D 布局/加载状态 */
+  const [mprLayout, setMprLayout] = useState<MprLayoutState>(initialMprLayout());
   /** 当前主拖动工具（null = 默认窗宽窗位） */
   const [primaryTool, setPrimaryTool] = useState<string>(ToolNames.windowLevel);
   const [showInfo, setShowInfo] = useState(true);
@@ -460,6 +470,18 @@ export default function App() {
       ? (stackByUid.get(assignments[activeViewportId] ?? '') ?? null)
       : null;
 
+  /** 当前激活序列的 MPR 数据门槛判定（FR-6.7）：不可用时禁用入口并提示原因 */
+  const activeMprGate = useMemo(
+    () => checkMprEligibility(activeStack),
+    [activeStack],
+  );
+
+  /** MPR 模式锁定的渲染序列（进入时快照；关闭/清空后为 null → 回落 2D 网格） */
+  const mprStack =
+    mprLayout.mode === 'on' && mprLayout.seriesUid !== null
+      ? (stackByUid.get(mprLayout.seriesUid) ?? null)
+      : null;
+
   /** 指定堆栈的默认窗宽窗位（文件自带优先，其次模态预设） */
   const getDefaultWwWl = useCallback((stack: SeriesStack | null) => {
     if (stack === null) {
@@ -573,6 +595,10 @@ export default function App() {
           Object.entries(prev).map(([id, uid]) => [id, uid === seriesUid ? null : uid]),
         ),
       );
+      // MPR 锁定的是该序列时同步退出三平面布局（FR-6.9）
+      if (mprLayout.mode === 'on' && mprLayout.seriesUid === seriesUid) {
+        setMprLayout(exitMprLayout(mprLayout));
+      }
       // 从累积数据中移除该序列的实例，并撤销其 SOPInstanceUID 去重标记（允许重新打开）
       const removedFiles = openedFilesRef.current.filter(
         (file) => (file.summary.seriesInstanceUid ?? `__file__:${file.fileName}`) === seriesUid,
@@ -588,7 +614,7 @@ export default function App() {
       setSeriesList((prev) => prev.filter((s) => s.seriesUid !== seriesUid));
       void releaseSeries(stack).then(() => showToast('已关闭序列并释放内存'));
     },
-    [showToast, stackByUid],
+    [mprLayout, showToast, stackByUid],
   );
 
   /** 清空全部数据集（FR-2.9）：二次确认后释放所有缓存与注册表 */
@@ -597,6 +623,9 @@ export default function App() {
       return;
     }
     setAssignments(Object.fromEntries(ALL_VIEWPORT_IDS.map((id) => [id, null])));
+    if (mprLayout.mode === 'on') {
+      setMprLayout(exitMprLayout(mprLayout));
+    }
     openedFilesRef.current = [];
     knownUidsRef.current = new Set();
     setSeriesList([]);
@@ -605,7 +634,7 @@ export default function App() {
     setThumbnails({});
     setLoadState({ status: 'idle' });
     void releaseAll(seriesList).then(() => showToast('已清空全部数据'));
-  }, [seriesList, showToast]);
+  }, [mprLayout, seriesList, showToast]);
 
   const loadSeriesToViewport = useCallback(
     (seriesUid: string) => {
@@ -626,6 +655,26 @@ export default function App() {
         : 'vp-0',
     );
   }, []);
+
+  /** 一键「单轴向 ⇄ 三平面」（FR-6.9）：进入时锁定量激活序列并快照 2D 布局 */
+  const toggleMpr = useCallback(() => {
+    if (mprLayout.mode === 'on') {
+      setMprLayout(exitMprLayout(mprLayout));
+      return;
+    }
+    const stack = stackByUid.get(assignments[activeViewportId] ?? '') ?? null;
+    const gate = checkMprEligibility(stack);
+    if (!gate.allowed) {
+      showToast(gate.message ?? 'MPR 不可用');
+      return;
+    }
+    if (stack === null) {
+      return;
+    }
+    setMprLayout(
+      enterMprLayout(mprLayout, stack.seriesUid, LAYOUT_CONFIG[layout].cells),
+    );
+  }, [mprLayout, stackByUid, assignments, activeViewportId, layout, showToast]);
 
   // ── 全局快捷键（FR-11 子集）；文本输入框聚焦时不触发 ──
   useEffect(() => {
@@ -942,6 +991,19 @@ export default function App() {
 
           <button
             type="button"
+            className={`tool-button${mprLayout.mode === 'on' ? ' tool-button--active' : ''}`}
+            disabled={!activeMprGate.allowed && mprLayout.mode !== 'on'}
+            title={
+              mprLayout.mode === 'on'
+                ? '退出 MPR 三平面，返回 2D 布局'
+                : (activeMprGate.message ?? 'MPR 多平面重建（单轴向 ⇄ 三平面）')
+            }
+            onClick={toggleMpr}
+          >
+            MPR
+          </button>
+          <button
+            type="button"
             className={`tool-button${showInfo ? ' tool-button--active' : ''}`}
             title="信息覆盖文字开关（I）"
             onClick={() => setShowInfo((prev) => !prev)}
@@ -1015,6 +1077,15 @@ export default function App() {
           )}
 
           <div className="viewer-grid-wrap">
+            {mprStack !== null ? (
+              <MprViewport
+                key={mprStack.seriesUid}
+                stack={mprStack}
+                seriesUid={mprStack.seriesUid}
+                showInfo={showInfo}
+                onExitMpr={() => setMprLayout((prev) => exitMprLayout(prev))}
+              />
+            ) : (
             <div
               className="viewer-grid"
               style={{
@@ -1045,6 +1116,7 @@ export default function App() {
                 );
               })}
             </div>
+            )}
 
             {loadState.status === 'loading' &&
               (loadState.total >= PROGRESS_BAR_MIN_FILES ? (
