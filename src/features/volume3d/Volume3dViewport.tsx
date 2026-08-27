@@ -31,7 +31,6 @@ import {
   getRenderingEngine,
   setVolumesForViewports,
 } from '@cornerstonejs/core';
-import type { Types } from '@cornerstonejs/core';
 import { InfoOverlay } from '../../ui/components/InfoOverlay';
 import {
   IconCamera,
@@ -62,6 +61,11 @@ import {
   destroyVolume3dToolGroup,
   initializeVolume3dTools,
 } from './toolGroup';
+import {
+  VOLUME3D_VOI_CHANGED_EVENT,
+  wwWlFromVoiRange,
+} from './windowLevel3dTool';
+import type { Volume3dVoiChangedDetail, VoiRangeLike } from './windowLevel3dTool';
 import {
   applyClippingToViewport,
   applyPresetToViewport,
@@ -164,6 +168,8 @@ export function Volume3dViewport({
   const disposedRef = useRef(false);
   /** 最近一次应用的窗宽窗位（联动对比/防循环用） */
   const lastWwWlRef = useRef<{ ww: number; wl: number }>({ ww: 0, wl: 0 });
+  /** 已应用预设的 id（null = ready 后首次预设应用，即初始挂载） */
+  const appliedPresetIdRef = useRef<string | null>(null);
   /** 质量档位镜像（渐进渲染定时器回调里读取，避免闭包过期） */
   const qualityRef = useRef<Volume3dQualityLevel>(DEFAULT_VOLUME3D_QUALITY);
   const progressiveTimerRef = useRef<number | null>(null);
@@ -220,6 +226,9 @@ export function Volume3dViewport({
       return;
     }
     disposedRef.current = false;
+    // M11-F5：重建会话（序列切换/依赖变更重挂）时重置预设哨兵，
+    // 使 ready 后首跑按「初始挂载」处理（保持初始/联动窗，不误重置）
+    appliedPresetIdRef.current = null;
     void (async () => {
       try {
         await Promise.all([initializeDicomPipeline(), initializeVolume3dTools()]);
@@ -338,7 +347,10 @@ export function Volume3dViewport({
     // elementRef/engineRef 均为 ref，不进依赖数组（观察挂载容器本身）
   }, []);
 
-  // 预设切换（FR-7.2）：重赋色/不透明度传递函数，并保持当前窗宽窗位映射范围
+  // 预设切换（FR-7.2）：重赋色/不透明度传递函数。M11-F5 语义修正：
+  // 「切换」预设后把 WW/WL 重置为该预设默认值（presets.ts 的 ww/wl），
+  // 同步面板 state 与输入框并更新 lastWwWlRef；ready 后首次运行
+  // （初始挂载）保持初始/联动 2D 的窗宽窗位不变（FR-7.3）。
   useEffect(() => {
     if (status !== 'ready') {
       return;
@@ -348,11 +360,24 @@ export function Volume3dViewport({
     if (!vp || !preset) {
       return;
     }
+    const isInitialReady = appliedPresetIdRef.current === null;
     void applyPresetToViewport(vp, preset).then(() => {
-      const { ww: lastWw, wl: lastWl } = lastWwWlRefSafe();
-      if (lastWw > 0 && Number.isFinite(lastWl)) {
-        applyWwWlToViewport(vp, lastWw, lastWl);
+      if (isInitialReady) {
+        // 初始挂载：保持初始窗（联动 2D 值或默认预设初始窗）
+        const { ww: lastWw, wl: lastWl } = lastWwWlRefSafe();
+        if (lastWw > 0 && Number.isFinite(lastWl)) {
+          applyWwWlToViewport(vp, lastWw, lastWl);
+        }
+      } else {
+        // 预设切换：重置为该预设默认窗宽窗位（M11-F5）
+        applyWwWlToViewport(vp, preset.ww, preset.wl);
+        lastWwWlRef.current = { ww: preset.ww, wl: preset.wl };
+        setWw(preset.ww);
+        setWl(preset.wl);
+        setWwDraft(String(preset.ww));
+        setWlDraft(String(preset.wl));
       }
+      appliedPresetIdRef.current = presetId;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, presetId]);
@@ -366,7 +391,23 @@ export function Volume3dViewport({
     return preset ? { ww: preset.ww, wl: preset.wl } : { ww: 0, wl: 0 };
   }
 
-  // 窗宽窗位：视口 VOI_MODIFIED → 刷新显示值（FR-7.3）
+  // 面板显示统一更新：state + 输入框草稿 + lastWwWlRef（M11-F5：
+  // 旧实现只写 ww/wl state，输入框绑定的 wwDraft/wlDraft 永不跟随，
+  // 是「拖动时面板数字不动」的组成部分）
+  const applyVoiDisplayUpdate = useCallback((nextWw: number, nextWl: number) => {
+    lastWwWlRef.current = { ww: nextWw, wl: nextWl };
+    setWw(nextWw);
+    setWl(nextWl);
+    setWwDraft(String(nextWw));
+    setWlDraft(String(nextWl));
+  }, []);
+
+  // 窗宽窗位：视口 VOI 变更 → 刷新显示值（FR-7.3）
+  // M11-F5 双通道：
+  // - VOLUME3D_VOI_CHANGED_EVENT：WindowLevel3DTool 中键拖动逐帧补发
+  //   （内核部分视口架构的 setProperties 不派发 VOI_MODIFIED，根因见
+  //   windowLevel3dTool.ts）；
+  // - 内核 VOI_MODIFIED：resetProperties/setColormap 等其余 VOI 变更路径。
   useEffect(() => {
     if (status !== 'ready') {
       return undefined;
@@ -375,27 +416,35 @@ export function Volume3dViewport({
     if (!element) {
       return undefined;
     }
+    const updateFromRange = (range: VoiRangeLike | undefined) => {
+      if (!range) {
+        return;
+      }
+      const { ww: nextWw, wl: nextWl } = wwWlFromVoiRange(range);
+      applyVoiDisplayUpdate(nextWw, nextWl);
+    };
     const onVoiModified = (event: Event) => {
-      const detail = (event as CustomEvent<{ viewportId: string; range: Types.VOIRange }>)
+      const detail = (event as CustomEvent<{ viewportId: string; range: VoiRangeLike }>)
         .detail;
       if (detail.viewportId !== VOLUME3D_VIEWPORT_ID) {
         return;
       }
-      const range = detail.range;
-      if (!range) {
+      updateFromRange(detail.range);
+    };
+    const onVoiChanged = (event: Event) => {
+      const detail = (event as CustomEvent<Volume3dVoiChangedDetail>).detail;
+      if (!detail || detail.viewportId !== VOLUME3D_VIEWPORT_ID) {
         return;
       }
-      const nextWw = Math.round((range.upper - range.lower) * 100) / 100;
-      const nextWl = Math.round(((range.upper + range.lower) / 2) * 100) / 100;
-      lastWwWlRef.current = { ww: nextWw, wl: nextWl };
-      setWw(nextWw);
-      setWl(nextWl);
+      applyVoiDisplayUpdate(detail.ww, detail.wl);
     };
     element.addEventListener(Enums.Events.VOI_MODIFIED, onVoiModified);
+    element.addEventListener(VOLUME3D_VOI_CHANGED_EVENT, onVoiChanged);
     return () => {
       element.removeEventListener(Enums.Events.VOI_MODIFIED, onVoiModified);
+      element.removeEventListener(VOLUME3D_VOI_CHANGED_EVENT, onVoiChanged);
     };
-  }, [status]);
+  }, [status, applyVoiDisplayUpdate]);
 
   // 2D→3D 联动（FR-7.3）：联动开启时 2D 窗宽窗位变化应用到 3D（防循环：与已应用值相同则跳过）
   useEffect(() => {
@@ -414,10 +463,9 @@ export function Volume3dViewport({
       return;
     }
     applyWwWlToViewport(vp, linkedWwWl.ww, linkedWwWl.wl);
-    lastWwWlRef.current = { ww: linkedWwWl.ww, wl: linkedWwWl.wl };
-    setWw(linkedWwWl.ww);
-    setWl(linkedWwWl.wl);
-  }, [status, syncTo2D, linkedWwWl]);
+    // M11-F5：统一走 applyVoiDisplayUpdate，输入框草稿同步跟随 2D 联动值
+    applyVoiDisplayUpdate(linkedWwWl.ww, linkedWwWl.wl);
+  }, [status, syncTo2D, linkedWwWl, applyVoiDisplayUpdate]);
 
   // 质量档位（FR-7.7）：采样距离倍数应用
   useEffect(() => {

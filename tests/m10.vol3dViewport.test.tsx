@@ -58,6 +58,8 @@ vi.mock('@cornerstonejs/core', () => ({
   cache: { removeVolumeLoadObject: vi.fn() },
   getRenderingEngine: vi.fn(() => engine),
   setVolumesForViewports: vi.fn(async () => undefined),
+  // M11-F5：windowLevel3dTool 静态引用（本文件不触发拖动，仅补齐导出）
+  getEnabledElement: vi.fn(),
 }));
 
 vi.mock('@cornerstonejs/tools', () => {

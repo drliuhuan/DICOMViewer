@@ -1,7 +1,10 @@
 /**
- * M10-C 3D ToolGroup 装配（FR-7.1 交互；M11-F3 绑定矩阵）：
+ * M10-C 3D ToolGroup 装配（FR-7.1 交互；M11-F3 绑定矩阵；M11-F5 工具替换）：
  * 左键平移/中键调窗/右键旋转/滚轮缩放 + OrientationMarker 方位指示；
- * addTool 先于 setToolActive；幂等注册（含 M11-F3 新增 WindowLevelTool）。
+ * addTool 先于 setToolActive；幂等注册。
+ * M11-F5：中键调窗由内建 WindowLevelTool 换为子类 WindowLevel3DTool
+ * （拖动中逐帧补发应用级 VOI 变更事件供面板实时跟随，根因见
+ * src/features/volume3d/windowLevel3dTool.ts）。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -73,7 +76,13 @@ function lastFakeToolGroup(): FakeToolGroup {
   return group as unknown as FakeToolGroup;
 }
 
-const VOL3D_TOOL_ORDER = ['TrackballRotate', 'Pan', 'Zoom', 'WindowLevel', 'OrientationMarker'];
+const VOL3D_TOOL_ORDER = [
+  'TrackballRotate',
+  'Pan',
+  'Zoom',
+  'WindowLevel3D',
+  'OrientationMarker',
+];
 
 describe('createVolume3dToolGroup（FR-7.1 交互）', () => {
   beforeEach(() => {
@@ -107,7 +116,7 @@ describe('createVolume3dToolGroup（FR-7.1 交互）', () => {
     expect(group.setToolActive).toHaveBeenCalledWith('Pan', {
       bindings: [{ mouseButton: 1 }],
     });
-    expect(group.setToolActive).toHaveBeenCalledWith('WindowLevel', {
+    expect(group.setToolActive).toHaveBeenCalledWith('WindowLevel3D', {
       bindings: [{ mouseButton: 4 }],
     });
     expect(group.setToolActive).toHaveBeenCalledWith('TrackballRotate', {
@@ -135,14 +144,14 @@ describe('createVolume3dToolGroup（FR-7.1 交互）', () => {
 });
 
 describe('initializeVolume3dTools', () => {
-  it('注册 TrackballRotate / OrientationMarker / WindowLevel 到全局工具表且幂等', async () => {
+  it('注册 TrackballRotate / OrientationMarker / WindowLevel3D 到全局工具表且幂等', async () => {
     const tools = await import('@cornerstonejs/tools');
     vi.mocked(tools.init).mockClear();
     vi.mocked(tools.addTool).mockClear();
     await initializeVolume3dTools();
     await initializeVolume3dTools();
     expect(tools.init).toHaveBeenCalledTimes(1);
-    // M11-F3：TrackballRotate + OrientationMarker + WindowLevel = 3 个
+    // M11-F5：TrackballRotate + OrientationMarker + WindowLevel3D（子类）= 3 个
     expect(tools.addTool).toHaveBeenCalledTimes(3);
     expect(tools.addTool).toHaveBeenCalledWith(
       expect.objectContaining({ toolName: 'TrackballRotate' }),
@@ -150,7 +159,11 @@ describe('initializeVolume3dTools', () => {
     expect(tools.addTool).toHaveBeenCalledWith(
       expect.objectContaining({ toolName: 'OrientationMarker' }),
     );
+    // M11-F5：注册的是 WindowLevel3DTool（toolName WindowLevel3D），非内建 WindowLevel
     expect(tools.addTool).toHaveBeenCalledWith(
+      expect.objectContaining({ toolName: 'WindowLevel3D' }),
+    );
+    expect(tools.addTool).not.toHaveBeenCalledWith(
       expect.objectContaining({ toolName: 'WindowLevel' }),
     );
   });

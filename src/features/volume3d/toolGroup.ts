@@ -3,8 +3,10 @@
  *
  * 交互默认（cornerstone 内建 camera 控制，可在设置面板调整绑定为 P2）：
  * - 左键（Primary）→ PanTool 平移；
- * - 中键（Auxiliary）→ WindowLevelTool 窗宽窗位（拖动实时改体绘制
- *   VOI 映射范围，与面板输入/2D 联动同语义）；
+ * - 中键（Auxiliary）→ WindowLevel3DTool 窗宽窗位（M11-F5：WindowLevelTool
+ *   子类，拖动中逐帧补发应用级 VOI 变更事件供面板实时跟随；经典
+ *   WindowLevelTool 的 setProperties 在部分内核视口架构下不派发
+ *   VOI_MODIFIED，见 windowLevel3dTool.ts 根因注释）；
  * - 右键（Secondary）→ TrackballRotateTool 旋转（3D 内建相机轨道旋转）；
  * - 滚轮（Wheel）→ ZoomTool 以光标为心缩放；
  * - OrientationMarkerTool 显示角落方位指示器（轴位朝向立方体）。
@@ -18,11 +20,11 @@ import {
   PanTool,
   ToolGroupManager,
   TrackballRotateTool,
-  WindowLevelTool,
   ZoomTool,
 } from '@cornerstonejs/tools';
 import type { Types } from '@cornerstonejs/tools';
 import { VOLUME3D_VIEWPORT_ID } from './layout';
+import { WindowLevel3DTool } from './windowLevel3dTool';
 
 type Volume3dToolGroup = Types.IToolGroup;
 
@@ -40,7 +42,8 @@ export async function initializeVolume3dTools(): Promise<void> {
   tools.addTool(tools.TrackballRotateTool);
   tools.addTool(tools.OrientationMarkerTool);
   // M11-F3：中键窗宽窗位（3D ToolGroup 此前未注册该工具）
-  tools.addTool(tools.WindowLevelTool);
+  // M11-F5：改用 WindowLevelTool 子类（拖动中补发 VOI 变更事件）
+  tools.addTool(WindowLevel3DTool);
   volume3dToolsInitialized = true;
 }
 
@@ -68,13 +71,14 @@ export function createVolume3dToolGroup(
   toolGroup.addTool(TrackballRotateTool.toolName);
   toolGroup.addTool(PanTool.toolName);
   toolGroup.addTool(ZoomTool.toolName);
-  toolGroup.addTool(WindowLevelTool.toolName);
+  // M11-F5：中键调窗换用 WindowLevel3DTool（拖动中实时同步面板）
+  toolGroup.addTool(WindowLevel3DTool.toolName);
   toolGroup.addTool(OrientationMarkerTool.toolName);
 
   toolGroup.setToolActive(PanTool.toolName, {
     bindings: [{ mouseButton: MouseBindings.Primary }],
   });
-  toolGroup.setToolActive(WindowLevelTool.toolName, {
+  toolGroup.setToolActive(WindowLevel3DTool.toolName, {
     bindings: [{ mouseButton: MouseBindings.Auxiliary }],
   });
   toolGroup.setToolActive(TrackballRotateTool.toolName, {
