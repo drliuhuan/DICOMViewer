@@ -1,9 +1,11 @@
 /**
- * 3D 体绘制视口 ToolGroup 装配（FR-7.1 交互，M10-C）。
+ * 3D 体绘制视口 ToolGroup 装配（FR-7.1 交互，M10-C；M11-F3 绑定矩阵调整）。
  *
  * 交互默认（cornerstone 内建 camera 控制，可在设置面板调整绑定为 P2）：
- * - 左键（Primary）→ TrackballRotateTool 旋转（3D 内建相机轨道旋转）；
- * - 中键（Auxiliary）→ PanTool 平移；
+ * - 左键（Primary）→ PanTool 平移；
+ * - 中键（Auxiliary）→ WindowLevelTool 窗宽窗位（拖动实时改体绘制
+ *   VOI 映射范围，与面板输入/2D 联动同语义）；
+ * - 右键（Secondary）→ TrackballRotateTool 旋转（3D 内建相机轨道旋转）；
  * - 滚轮（Wheel）→ ZoomTool 以光标为心缩放；
  * - OrientationMarkerTool 显示角落方位指示器（轴位朝向立方体）。
  *
@@ -16,6 +18,7 @@ import {
   PanTool,
   ToolGroupManager,
   TrackballRotateTool,
+  WindowLevelTool,
   ZoomTool,
 } from '@cornerstonejs/tools';
 import type { Types } from '@cornerstonejs/tools';
@@ -36,6 +39,8 @@ export async function initializeVolume3dTools(): Promise<void> {
   tools.init();
   tools.addTool(tools.TrackballRotateTool);
   tools.addTool(tools.OrientationMarkerTool);
+  // M11-F3：中键窗宽窗位（3D ToolGroup 此前未注册该工具）
+  tools.addTool(tools.WindowLevelTool);
   volume3dToolsInitialized = true;
 }
 
@@ -63,13 +68,17 @@ export function createVolume3dToolGroup(
   toolGroup.addTool(TrackballRotateTool.toolName);
   toolGroup.addTool(PanTool.toolName);
   toolGroup.addTool(ZoomTool.toolName);
+  toolGroup.addTool(WindowLevelTool.toolName);
   toolGroup.addTool(OrientationMarkerTool.toolName);
 
-  toolGroup.setToolActive(TrackballRotateTool.toolName, {
+  toolGroup.setToolActive(PanTool.toolName, {
     bindings: [{ mouseButton: MouseBindings.Primary }],
   });
-  toolGroup.setToolActive(PanTool.toolName, {
+  toolGroup.setToolActive(WindowLevelTool.toolName, {
     bindings: [{ mouseButton: MouseBindings.Auxiliary }],
+  });
+  toolGroup.setToolActive(TrackballRotateTool.toolName, {
+    bindings: [{ mouseButton: MouseBindings.Secondary }],
   });
   toolGroup.setToolActive(ZoomTool.toolName, {
     bindings: [{ mouseButton: MouseBindings.Wheel }],

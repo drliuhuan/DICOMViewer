@@ -1,10 +1,12 @@
 /**
- * MPR 三平面 ToolGroup 装配（FR-6.2/6.3/6.6，M10-B）。
+ * MPR 三平面 ToolGroup 装配（FR-6.2/6.3/6.6，M10-B；M11-F3 绑定矩阵调整）。
  *
- * - 一个 ToolGroup 挂载轴向/冠状/矢状三视口，CrosshairsTool 以
- *   Secondary（右键）拖动定位线联动：拖线移动交心，三平面实时更新；
- * - 基础操作继承（FR-6.6）：左键窗宽窗位 / 中键平移 / Ctrl+滚轮缩放 /
- *   滚轮翻层，与 2D ViewerCell 工具绑定语义一致；
+ * - 一个 ToolGroup 挂载轴向/冠状/矢状三视口，CrosshairsTool 负责定位线
+ *   联动：M11-F3 起纳入「可切换主工具」机制（方案 a）——默认主工具为
+ *   Pan，工具栏「定位线」按钮激活后左键拖线移动交心，三平面实时更新；
+ *   非主工具态（Passive）定位线仍渲染并随相机联动，只是不响应拖动；
+ * - 基础操作继承（FR-6.6，与 2D 一致的新矩阵）：左键平移（默认主工具）/
+ *   中键窗宽窗位（常驻）/ 右键滚层 + 滚轮翻层 / Ctrl+滚轮缩放；
  * - 定位线颜色遵循医学惯例：红=矢状参考、绿=冠状、黄=轴向。
  *   CrosshairsTool 渲染时按「另一视口」的 getReferenceLineColor 上色，
  *   因此三视口各自看到的线色即对应平面的参考色（轴向视口可见红+绿线等）。
@@ -107,27 +109,12 @@ export function createMprToolGroup(
     getReferenceLineSlabThicknessControlsOn: () => false,
   });
 
-  toolGroup.setToolActive(WindowLevelTool.toolName, {
-    bindings: [{ mouseButton: MouseBindings.Primary }],
-  });
-  toolGroup.setToolActive(PanTool.toolName, {
-    bindings: [{ mouseButton: MouseBindings.Auxiliary }],
-  });
-  toolGroup.setToolActive(ZoomTool.toolName, {
-    bindings: [
-      { mouseButton: MouseBindings.Wheel, modifierKey: KeyboardBindings.Ctrl },
-    ],
-  });
-  toolGroup.setToolActive(StackScrollTool.toolName, {
-    bindings: [{ mouseButton: MouseBindings.Wheel }],
-  });
-  toolGroup.setToolActive(CrosshairsTool.toolName, {
-    bindings: [{ mouseButton: MouseBindings.Secondary }],
-  });
+  // 绑定矩阵唯一来源：与主工具切换共用同一套装配逻辑（默认主工具=Pan）
+  syncMprToolBindings(toolGroup, MPR_DEFAULT_PRIMARY_TOOL);
   return toolGroup;
 }
 
-/** 可切换为「主工具」的 MPR 工具（左键 Primary；含测量工具 FR-5.15） */
+/** 可切换为「主工具」的 MPR 工具（左键 Primary；含测量 FR-5.15 与 Crosshairs） */
 export const MPR_PRIMARY_SELECTABLE_TOOLS: readonly string[] = [
   WindowLevelTool.toolName,
   ZoomTool.toolName,
@@ -138,27 +125,42 @@ export const MPR_PRIMARY_SELECTABLE_TOOLS: readonly string[] = [
   RectangleROITool.toolName,
   EllipticalROITool.toolName,
   ProbeTool.toolName,
+  CrosshairsTool.toolName,
 ];
 
-/** 各工具常驻绑定（不随主工具切换丢失；Crosshair 保持中键/右键语义不冲突） */
+/** MPR 默认主工具（左键基础交互）：平移（M11-F3，原为窗宽窗位） */
+export const MPR_DEFAULT_PRIMARY_TOOL: string = PanTool.toolName;
+
+/** MPR 定位线工具名（工具栏「定位线」按钮的切换目标） */
+export const MPR_CROSSHAIRS_TOOL: string = CrosshairsTool.toolName;
+
+/**
+ * 各工具常驻绑定（不随主工具切换丢失；M11-F3 矩阵：
+ * 中键=窗宽窗位常驻、右键+滚轮=翻层、Ctrl+滚轮=缩放；
+ * Pan/Crosshairs 仅在作为主工具时持 Primary，无常驻绑定）。
+ */
 const MPR_PERSISTENT_BINDINGS: Readonly<Record<string, readonly ToolBinding[]>> = {
-  [PanTool.toolName]: [{ mouseButton: MouseBindings.Auxiliary }],
+  [WindowLevelTool.toolName]: [{ mouseButton: MouseBindings.Auxiliary }],
   [ZoomTool.toolName]: [
     { mouseButton: MouseBindings.Wheel, modifierKey: KeyboardBindings.Ctrl },
   ],
-  [StackScrollTool.toolName]: [{ mouseButton: MouseBindings.Wheel }],
+  [StackScrollTool.toolName]: [
+    { mouseButton: MouseBindings.Wheel },
+    { mouseButton: MouseBindings.Secondary },
+  ],
 };
 
 /**
- * 切换 MPR 三视口的左键主工具（FR-5.15 测量 / FR-6.6 窗宽窗位）。
- * 与 2D toolSetup.syncToolBindings 同一套「先 setToolPassive 剥离 Primary，
- * 再按目标重建」语义；Crosshair 保持 Secondary（右键拖线联动）永不参与切换。
+ * 切换 MPR 三视口的左键主工具（FR-5.15 测量 / FR-6.6 窗宽窗位 /
+ * M11-F3 Crosshairs 定位线）。与 2D toolSetup.syncToolBindings 同一套
+ * 「先 setToolPassive 剥离 Primary，再按目标重建」语义；默认主工具=Pan。
+ * Crosshairs 非主工具时落回 Passive（定位线渲染/相机联动保留，拖动关闭）。
  */
 export function syncMprToolBindings(
   toolGroup: MprToolGroup,
   primary: string | null,
 ): void {
-  const activeTool = primary ?? WindowLevelTool.toolName;
+  const activeTool = primary ?? MPR_DEFAULT_PRIMARY_TOOL;
   for (const toolName of MPR_PRIMARY_SELECTABLE_TOOLS) {
     toolGroup.setToolPassive(toolName);
     const bindings =
@@ -169,10 +171,6 @@ export function syncMprToolBindings(
       toolGroup.setToolActive(toolName, { bindings });
     }
   }
-  // Crosshair 恒以 Secondary 保持激活（右键拖线联动，FR-6.2）
-  toolGroup.setToolActive(CrosshairsTool.toolName, {
-    bindings: [{ mouseButton: MouseBindings.Secondary }],
-  });
 }
 
 /** 销毁 MPR ToolGroup（退出 MPR 时调用） */

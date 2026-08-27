@@ -69,6 +69,7 @@ vi.mock('../src/features/viewer/toolSetup', () => ({
     probe: 'Probe',
   },
   PLACEHOLDER_MEASUREMENT_TOOLS: ['Length', 'Angle', 'RectangleROI', 'EllipticalROI', 'Probe'],
+  DEFAULT_PRIMARY_TOOL: 'Pan',
   initializeTools: vi.fn(async () => undefined),
   createBoundToolGroup: createBoundToolGroupMock,
   destroyBoundToolGroup: vi.fn(),

@@ -348,6 +348,16 @@ export function IconVolume3d(p?: number | IconProps): JSX.Element {
   );
 }
 
+/** M11-F3：MPR 定位线（十字交点） */
+export function IconCrosshair(p?: number | IconProps): JSX.Element {
+  return (
+    <Svg {...norm(p)}>
+      <circle cx="12" cy="12" r="7" />
+      <path d="M12 2v5M12 17v5M2 12h5M17 12h5" />
+    </Svg>
+  );
+}
+
 export function IconInfo(p?: number | IconProps): JSX.Element {
   return (
     <Svg {...norm(p)}>

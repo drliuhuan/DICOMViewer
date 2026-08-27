@@ -2,8 +2,9 @@
  * 3D 体绘制视口组件（FR-7.1/7.2/7.3/7.4/7.6/7.7/7.8/7.9/7.12，M10-C）。
  *
  * - 渲染：VOLUME_3D 视口（vtk.js 光线投射），复用 M10-B 的 volume 构建路径
- *   （buildMprVolume，同一序列并行为三维体数据）；旋转/平移/缩放由
- *   TrackballRotate/Pan/Zoom ToolGroup 提供（左键旋转、中键平移、滚轮缩放）；
+ *   （buildMprVolume，同一序列并行为三维体数据）；旋转/平移/缩放/调窗由
+ *   Pan/WindowLevel/TrackballRotate/Zoom ToolGroup 提供（M11-F3 矩阵：
+ *   左键平移、中键调窗、右键旋转、滚轮缩放）；
  * - 预设（FR-7.2）：CT-Bone/Angio/Soft-Tissue/Skin/MIP 下拉切换，赋色/
  *   不透明度传递函数到 volume actor 属性；
  * - 窗宽窗位（FR-7.3）：调整实时影响体绘制映射范围；「联动 2D」开关把
@@ -535,6 +536,8 @@ export function Volume3dViewport({
     <div className="mpr-root">
       <div className="mpr-bar">
         <span className="mpr-title">3D 体绘制</span>
+        {/* M11-F3：3D 鼠标矩阵提示（左平/中窗/右旋/滚轮缩放） */}
+        <span className="mpr-note">左键平移 · 中键调窗 · 右键旋转 · 滚轮缩放</span>
         <label className="mpr-field">
           渲染预设
           <select

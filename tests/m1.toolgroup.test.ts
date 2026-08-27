@@ -1,22 +1,28 @@
 /**
- * M1 验收缺陷回归测试（ToolGroup 工具挂载与主工具切换）。
+ * M1 验收缺陷回归测试（ToolGroup 工具挂载与主工具切换；M11-F3 新绑定矩阵）。
  *
  * 背景 1：createBoundToolGroup 此前缺少 toolGroup.addTool(...)，
  * 库内 setToolActive 对未挂载工具静默 return（仅 console.warn），
  * toolOptions 为空 → 事件派发链找不到激活工具，
- * 滚轮翻页/左键窗宽窗位/中键平移全部无响应。
+ * 滚轮翻页/平移/调窗全部无响应。
  *
- * 背景 2（本次修复）：setToolActive 会把新 bindings 与旧 bindings 合并
+ * 背景 2（历史修复）：setToolActive 会把新 bindings 与旧 bindings 合并
  * （ToolGroup.js: [...prevBindings, ...newBindings] 去重），旧实现切走
- * WindowLevel 时传 bindings:[] 无法清掉 Primary → 事件派发按 addTool
- * 顺序先命中 WindowLevel，缩放/平移/翻层永远表现为窗宽窗位。
+ * 主工具时传 bindings:[] 无法清掉 Primary → 事件派发按 addTool
+ * 顺序先命中旧工具，缩放/平移/翻层永远表现为旧工具行为。
+ *
+ * M11-F3 绑定矩阵（本文件锁定）：
+ * - 默认主工具 = Pan（左键平移）；测量/缩放/翻层/调窗激活时左键归该工具；
+ * - WindowLevel 常驻 Auxiliary（中键调窗，任何主工具下可用）；
+ * - StackScroll 常驻 Wheel（滚轮翻页）+ Secondary（右键拖动翻层）；
+ * - Zoom 常驻 Ctrl+滚轮 + 双指触摸。
  *
  * 本文件 mock @cornerstonejs/tools，验证：
- * 1. 全部 9 个工具（4 常驻 + 5 测量占位）逐个 addTool 进 ToolGroup；
+ * 1. 全部 10 个工具（4 常驻 + 6 测量）逐个 addTool 进 ToolGroup；
  * 2. addTool 调用严格先于任何 setToolActive；
- * 3. 默认主工具 WindowLevel 以 Primary 绑定激活；
+ * 3. 默认主工具 Pan 以 Primary 绑定激活；
  * 4. 切换主工具后：目标工具持 Primary，原主工具不再含任何鼠标键绑定
- *    （Passive 态），常驻绑定（中键平移/Ctrl+滚轮/滚轮翻页）恒不丢。
+ *    （Passive 态），常驻绑定（中键调窗/Ctrl+滚轮/滚轮翻页/右键翻层）恒不丢。
  *    行为仿真按库源码 ToolGroup.js 的真实语义建模
  *    （active=merge、passive=剥离 Primary 且剩余绑定时保持 Active）。
  */
@@ -57,7 +63,7 @@ vi.mock('@cornerstonejs/tools', () => {
     destroyToolGroup: vi.fn(),
   };
 
-  const MouseBindings = { Primary: 1, Auxiliary: 4, Wheel: 524288 };
+  const MouseBindings = { Primary: 1, Secondary: 2, Auxiliary: 4, Wheel: 524288 };
   const KeyboardBindings = { Ctrl: 'ctrl' };
 
   return {
@@ -188,11 +194,15 @@ describe('createBoundToolGroup', () => {
     );
   });
 
-  it('默认主工具 WindowLevel 以 Primary 绑定保持 Active（回归保护）', () => {
+  it('默认主工具 Pan 以 Primary 绑定激活；WindowLevel 常驻中键（M11-F3 回归保护）', () => {
     createBoundToolGroup('engine-d', 'vp-d');
     const group = lastFakeToolGroup();
-    expect(group.setToolActive).toHaveBeenCalledWith(ToolNames.windowLevel, {
+    expect(group.setToolActive).toHaveBeenCalledWith(ToolNames.pan, {
       bindings: [{ mouseButton: Enums.MouseBindings.Primary }],
+    });
+    // 中键调窗常驻：任何主工具下按住中键即调窗
+    expect(group.setToolActive).toHaveBeenCalledWith(ToolNames.windowLevel, {
+      bindings: [{ mouseButton: Enums.MouseBindings.Auxiliary }],
     });
   });
 
@@ -268,7 +278,7 @@ function sync(group: SimToolGroup, primary: string | null): void {
 }
 
 describe('syncToolBindings 主工具切换（按库语义仿真 toolOptions 终态）', () => {
-  const { Primary, Auxiliary, Wheel } = Enums.MouseBindings;
+  const { Primary, Auxiliary, Secondary, Wheel } = Enums.MouseBindings;
   const CtrlWheel = {
     mouseButton: Enums.MouseBindings.Wheel,
     modifierKey: Enums.KeyboardBindings.Ctrl,
@@ -285,11 +295,12 @@ describe('syncToolBindings 主工具切换（按库语义仿真 toolOptions 终�
     return option;
   }
 
-  /** 常驻绑定不变式：任意主工具下恒成立 */
+  /** 常驻绑定不变式：任意主工具下恒成立（M11-F3 矩阵） */
   function assertPersistentBindings(group: ReturnType<typeof createStatefulToolGroup>) {
-    expect(optOf(group, ToolNames.pan).bindings).toContainEqual({ mouseButton: Auxiliary });
+    expect(optOf(group, ToolNames.windowLevel).bindings).toContainEqual({ mouseButton: Auxiliary });
     expect(optOf(group, ToolNames.zoom).bindings).toContainEqual(CtrlWheel);
     expect(optOf(group, ToolNames.stackScroll).bindings).toContainEqual({ mouseButton: Wheel });
+    expect(optOf(group, ToolNames.stackScroll).bindings).toContainEqual({ mouseButton: Secondary });
   }
 
   function assertPrimary(group: ReturnType<typeof createStatefulToolGroup>, name: string) {
@@ -298,12 +309,12 @@ describe('syncToolBindings 主工具切换（按库语义仿真 toolOptions 终�
     expect(opt.bindings).toContainEqual({ mouseButton: Primary });
   }
 
-  /** 无 Primary 绑定（pan/zoom/ss 非主工具时仍以常驻绑定保持 Active） */
+  /** 无 Primary 绑定（windowLevel/zoom/ss 非主工具时仍以常驻绑定保持 Active） */
   function assertNoPrimary(group: ReturnType<typeof createStatefulToolGroup>, name: string) {
     expect(optOf(group, name).bindings).not.toContainEqual({ mouseButton: Primary });
   }
 
-  /** 仅用于 windowLevel：无常驻绑定 → 切走后应为 Passive 且无任何鼠标键 */
+  /** 仅用于 pan/测量工具：无常驻绑定 → 切走后应为 Passive 且无任何鼠标键 */
   function assertPassiveWithoutMouseBindings(
     group: ReturnType<typeof createStatefulToolGroup>,
     name: string,
@@ -318,54 +329,54 @@ describe('syncToolBindings 主工具切换（按库语义仿真 toolOptions 终�
     toolGroups.length = 0;
   });
 
-  it('默认（null → windowLevel）：WindowLevel 拿 Primary，其余仅常驻绑定 Active', () => {
+  it('默认（null → pan）：Pan 拿 Primary，其余仅常驻绑定 Active', () => {
     const group = createStatefulToolGroup();
     sync(group, null);
-    assertPrimary(group, ToolNames.windowLevel);
+    assertPrimary(group, ToolNames.pan);
     assertPersistentBindings(group);
-    for (const name of [ToolNames.pan, ToolNames.zoom, ToolNames.stackScroll]) {
+    for (const name of [ToolNames.windowLevel, ToolNames.zoom, ToolNames.stackScroll]) {
       expect(optOf(group, name).bindings).not.toContainEqual({ mouseButton: Primary });
     }
   });
 
-  it('切到 pan 后：pan 含 Primary；windowLevel 不含任何鼠标键且为 Passive 态', () => {
+  it('切到 windowLevel 后：WL 含 Primary+中键；pan 不含任何鼠标键且为 Passive 态', () => {
     const group = createStatefulToolGroup();
-    sync(group, ToolNames.windowLevel);
     sync(group, ToolNames.pan);
+    sync(group, ToolNames.windowLevel);
 
-    assertPrimary(group, ToolNames.pan);
-    assertPassiveWithoutMouseBindings(group, ToolNames.windowLevel);
+    assertPrimary(group, ToolNames.windowLevel);
+    assertPassiveWithoutMouseBindings(group, ToolNames.pan);
     assertNoPrimary(group, ToolNames.zoom);
     assertNoPrimary(group, ToolNames.stackScroll);
     assertPersistentBindings(group);
 
-    // 回归缺陷锁：windowLevel 的 bindings 不得残留 Primary（merge 缺陷）
-    expect(optOf(group, ToolNames.windowLevel).bindings).not.toContainEqual({
+    // 回归缺陷锁：pan 的 bindings 不得残留 Primary（merge 缺陷）
+    expect(optOf(group, ToolNames.pan).bindings).not.toContainEqual({
       mouseButton: Primary,
     });
   });
 
-  it('切到 zoom 后同理；stackScroll 恒有滚轮翻页绑定', () => {
+  it('切到 zoom 后同理；stackScroll 恒有滚轮+右键翻层绑定', () => {
     const group = createStatefulToolGroup();
     sync(group, ToolNames.pan);
     sync(group, ToolNames.zoom);
 
     assertPrimary(group, ToolNames.zoom);
-    assertNoPrimary(group, ToolNames.pan);
-    assertPassiveWithoutMouseBindings(group, ToolNames.windowLevel);
+    assertNoPrimary(group, ToolNames.windowLevel);
+    assertPassiveWithoutMouseBindings(group, ToolNames.pan);
     assertNoPrimary(group, ToolNames.stackScroll);
     assertPersistentBindings(group);
   });
 
-  it('切到 stackScroll 后再切回 null：恢复 windowLevel 默认且无 Primary 残留', () => {
+  it('切到 stackScroll 后再切回 null：恢复 pan 默认且无 Primary 残留', () => {
     const group = createStatefulToolGroup();
     sync(group, ToolNames.stackScroll);
     assertPrimary(group, ToolNames.stackScroll);
     assertNoPrimary(group, ToolNames.zoom);
 
     sync(group, null);
-    assertPrimary(group, ToolNames.windowLevel);
-    for (const name of [ToolNames.pan, ToolNames.zoom, ToolNames.stackScroll]) {
+    assertPrimary(group, ToolNames.pan);
+    for (const name of [ToolNames.windowLevel, ToolNames.zoom, ToolNames.stackScroll]) {
       expect(optOf(group, name).bindings).not.toContainEqual({ mouseButton: Primary });
     }
     assertPersistentBindings(group);
@@ -391,16 +402,26 @@ describe('syncToolBindings 主工具切换（按库语义仿真 toolOptions 终�
         .map(([name]) => name);
       expect(primaryHolders).toHaveLength(1);
     }
-    // 终态回到默认
-    assertPrimary(group, ToolNames.windowLevel);
+    // 终态回到默认（M11-F3：默认主工具=Pan）
+    assertPrimary(group, ToolNames.pan);
   });
 
   it('对从未激活过的工具切换（首次即非主工具）也不丢常驻绑定', () => {
-    // 全新 ToolGroup 直接 sync 到 zoom：pan/ss 从未激活过，
-    // passive 后无绑定 → 必须显式重建常驻绑定（否则中键/滚轮失效）
+    // 全新 ToolGroup 直接 sync 到 zoom：pan/WL/ss 从未激活过，
+    // passive 后无绑定 → 必须显式重建常驻绑定（否则中键/滚轮/右键失效）
     const group = createStatefulToolGroup();
     sync(group, ToolNames.zoom);
     assertPrimary(group, ToolNames.zoom);
+    assertPersistentBindings(group);
+  });
+
+  it('未知主工具名（如 MPR 的 Crosshairs）回退默认 pan，不产生孤儿 Primary', () => {
+    const group = createStatefulToolGroup();
+    sync(group, 'Crosshairs');
+    assertPrimary(group, ToolNames.pan);
+    for (const name of [ToolNames.windowLevel, ToolNames.zoom, ToolNames.stackScroll]) {
+      expect(optOf(group, name).bindings).not.toContainEqual({ mouseButton: Primary });
+    }
     assertPersistentBindings(group);
   });
 });

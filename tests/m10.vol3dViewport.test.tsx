@@ -77,6 +77,8 @@ vi.mock('@cornerstonejs/tools', () => {
     TrackballRotateTool: defineTool('TrackballRotate'),
     PanTool: defineTool('Pan'),
     ZoomTool: defineTool('Zoom'),
+    // M11-F3：3D ToolGroup 新增中键窗宽窗位
+    WindowLevelTool: defineTool('WindowLevel'),
     OrientationMarkerTool: defineTool('OrientationMarker'),
     ToolGroupManager: {
       createToolGroup: vi.fn((id: string) => {

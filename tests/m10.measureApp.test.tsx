@@ -58,6 +58,8 @@ vi.mock('@cornerstonejs/tools', () => {
     },
     init: vi.fn(),
     addTool: vi.fn(),
+    // M11-F3：App 依赖链新增 mprToolGroup 模块级 CrosshairsTool 常量
+    CrosshairsTool: defineTool('Crosshairs'),
     WindowLevelTool: defineTool('WindowLevel'),
     ZoomTool: defineTool('Zoom'),
     PanTool: defineTool('Pan'),

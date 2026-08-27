@@ -1,6 +1,7 @@
 /**
- * 快捷键速查浮层（FR-11 要求：应用内提供快捷键速查表入口）。
- * 纯展示组件：数据来自 SHORTCUT_TABLE（与 resolveShortcut 的键位保持一致），
+ * 快捷键与鼠标速查浮层（FR-11 要求：应用内提供速查表入口）。
+ * 纯展示组件：数据来自 SHORTCUT_TABLE（键盘行与 resolveShortcut 的键位一致，
+ * 鼠标行为 M11-F3 绑定矩阵），
  * Esc / 遮罩点击 / 关闭按钮均可关闭。
  */
 import { useEffect } from 'react';
@@ -14,8 +15,14 @@ export interface ShortcutRow {
   labelKey: string;
 }
 
-/** 快捷键表（与 src/features/shortcuts/shortcuts.ts 的键位一一对应） */
+/** 快捷键/鼠标速查表（与 src/features/shortcuts/shortcuts.ts 键位、
+ *  M11-F3 鼠标绑定矩阵保持一致；首行为分节标题） */
 export const SHORTCUT_TABLE: readonly ShortcutRow[] = [
+  { keys: '左键拖动', labelKey: 'help.row.mousePrimary' },
+  { keys: '中键拖动', labelKey: 'help.row.mouseAuxiliary' },
+  { keys: '右键拖动', labelKey: 'help.row.mouseSecondary' },
+  { keys: '滚轮', labelKey: 'help.row.mouseWheel' },
+  { keys: 'Ctrl+滚轮', labelKey: 'help.row.wheelZoom' },
   { keys: 'I', labelKey: 'help.row.info' },
   { keys: 'W', labelKey: 'help.row.windowLevel' },
   { keys: 'P', labelKey: 'help.row.pan' },

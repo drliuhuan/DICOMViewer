@@ -105,7 +105,7 @@ describe('双指触控绑定（真实 ToolGroup）', () => {
     expect(zoom.bindings.find((b) => b.numTouchPoints === 2)?.mouseButton).toBeUndefined();
   });
 
-  it('派发仿真：单指 → 当前主工具（默认窗宽窗位）', () => {
+  it('派发仿真：单指 → 当前主工具（beforeEach 显式切到窗宽窗位）', () => {
     expect(activeToolForTouch(group, 1)).toBe(ToolNames.windowLevel);
   });
 
@@ -131,14 +131,18 @@ describe('双指触控绑定（真实 ToolGroup）', () => {
     ] as Array<string | null>;
     for (const primary of sequence) {
       syncToolBindings(group, primary);
-      const expectedPrimary = primary ?? ToolNames.windowLevel;
+      // M11-F3：null 回归默认主工具=Pan（触控绑定本身不变，仅默认主工具语义）
+      const expectedPrimary = primary ?? ToolNames.pan;
       expect(activeToolForTouch(group, 1)).toBe(expectedPrimary);
       expect(activeToolForTouch(group, 2)).toBe(ToolNames.zoom);
     }
-    // 终态回归默认
-    expect(group.getActivePrimaryMouseButtonTool()).toBe(ToolNames.windowLevel);
+    // 终态回归默认（Pan 持 Primary；窗宽窗位仅中键常驻）
+    expect(group.getActivePrimaryMouseButtonTool()).toBe(ToolNames.pan);
     expect(optionOf(group, ToolNames.zoom).bindings).toContainEqual(TWO_FINGER);
     expect(optionOf(group, ToolNames.windowLevel).bindings).toContainEqual({
+      mouseButton: Enums.MouseBindings.Auxiliary,
+    });
+    expect(optionOf(group, ToolNames.windowLevel).bindings).not.toContainEqual({
       mouseButton: Primary,
     });
   });

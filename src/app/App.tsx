@@ -90,7 +90,8 @@ import {
 import type { MprReferenceCenter, ViewportApi, ViewportUiState } from '../features/viewer/DicomViewport';
 import { ViewerCell } from '../features/viewer/ViewerCell';
 import { isSeriesDragEvent } from '../features/viewer/seriesDragDrop';
-import { ToolNames } from '../features/viewer/toolSetup';
+import { DEFAULT_PRIMARY_TOOL, ToolNames } from '../features/viewer/toolSetup';
+import { MPR_CROSSHAIRS_TOOL } from '../features/mpr/mprToolGroup';
 import { MprViewport } from '../features/mpr/MprViewport';
 import { checkMprEligibility } from '../features/mpr/mprGate';
 import {
@@ -136,6 +137,7 @@ import {
   IconCalibrate,
   IconChevronLeft,
   IconChevronRight,
+  IconCrosshair,
   IconWindowLevel,
   IconCobb,
   IconClose,
@@ -317,8 +319,8 @@ export default function App() {
   const [viewportWwWl, setViewportWwWl] = useState<Record<string, { ww: number; wl: number }>>(
     {},
   );
-  /** 当前主拖动工具（null = 默认窗宽窗位） */
-  const [primaryTool, setPrimaryTool] = useState<string>(ToolNames.windowLevel);
+  /** 当前主拖动工具（M11-F3：null/默认 = 平移；测量/定位线激活时占左键） */
+  const [primaryTool, setPrimaryTool] = useState<string>(DEFAULT_PRIMARY_TOOL);
   const [showInfo, setShowInfo] = useState(true);
   const [uiMap, setUiMap] = useState<Record<string, ViewportUiState>>({});
   /** WW/WL 输入框草稿（允许清空/中间态，失焦或回车时提交） */
@@ -947,9 +949,10 @@ export default function App() {
   // ── 动作（工具栏 + 快捷键共用） ────────────────────
   const activateTool = useCallback(
     (toolName: string) => {
+      // M11-F3：默认主工具=平移（Pan）。再次点击已激活工具 → 回归默认平移
       const next =
-        toolName !== ToolNames.windowLevel && primaryTool === toolName
-          ? ToolNames.windowLevel
+        toolName !== DEFAULT_PRIMARY_TOOL && primaryTool === toolName
+          ? DEFAULT_PRIMARY_TOOL
           : toolName;
       setPrimaryTool(next);
       apisRef.current.get(activeViewportId)?.setPrimaryTool(next);
@@ -1199,6 +1202,14 @@ export default function App() {
     }
     setMprLayout((prev) => exitMprLayout(prev));
   }, [mprLayout]);
+
+  // M11-F3：定位线是 MPR 专属主工具——任何退出 MPR 的路径（退出按钮/关序列/
+  // 清空全部）都回归默认平移，避免把 2D 工具组不存在的工具名残留到主工具状态
+  useEffect(() => {
+    if (mprLayout.mode !== 'on' && primaryTool === MPR_CROSSHAIRS_TOOL) {
+      setPrimaryTool(DEFAULT_PRIMARY_TOOL);
+    }
+  }, [mprLayout.mode, primaryTool]);
 
   /**
    * 序列完整性评估（进入 MPR/3D 时使用，M11 任务 1）：
@@ -1865,8 +1876,8 @@ export default function App() {
           }
           break;
         case 'cancelTool':
-          setPrimaryTool(ToolNames.windowLevel);
-          api?.setPrimaryTool(ToolNames.windowLevel);
+          setPrimaryTool(DEFAULT_PRIMARY_TOOL);
+          api?.setPrimaryTool(DEFAULT_PRIMARY_TOOL);
           break;
       }
     };
@@ -1969,7 +1980,7 @@ export default function App() {
             <button
               type="button"
               className={`tool-button${primaryTool === ToolNames.windowLevel ? ' tool-button--active' : ''}`}
-              title="窗宽窗位（左键拖动，快捷键 W）"
+              title="窗宽窗位（中键拖动，快捷键 W）"
               onClick={() => activateTool(ToolNames.windowLevel)}
             >
               <IconWindowLevel />
@@ -1987,7 +1998,7 @@ export default function App() {
             <button
               type="button"
               className={`tool-button${primaryTool === ToolNames.pan ? ' tool-button--active' : ''}`}
-              title="平移（中键拖动，快捷键 P）"
+              title="平移（左键拖动，快捷键 P）"
               onClick={() => activateTool(ToolNames.pan)}
             >
               <IconPan />
@@ -1996,12 +2007,26 @@ export default function App() {
             <button
               type="button"
               className={`tool-button${primaryTool === ToolNames.stackScroll ? ' tool-button--active' : ''}`}
-              title="层滚动（激活后拖动翻层；滚轮默认翻页）"
+              title="层滚动（右键拖动翻层；滚轮默认翻页）"
               onClick={() => activateTool(ToolNames.stackScroll)}
             >
               <IconStackScroll />
               <span className="tool-button-label">层滚动</span>
             </button>
+            {/* M11-F3 方案 a：MPR 定位线改为「可切换主工具」入口（原右键绑定让位给层滚动）。
+                仅 MPR 布局显示；激活后左键拖动定位线联动三平面，再次点击回归平移。 */}
+            {mprLayout.mode === 'on' && (
+              <button
+                type="button"
+                className={`tool-button${primaryTool === MPR_CROSSHAIRS_TOOL ? ' tool-button--active' : ''}`}
+                title="定位线（MPR）：激活后左键拖动移动定位线，三平面联动；再次点击回归平移"
+                aria-label="定位线（MPR 左键拖动，三平面联动）"
+                onClick={() => activateTool(MPR_CROSSHAIRS_TOOL)}
+              >
+                <IconCrosshair />
+                <span className="tool-button-label">定位线</span>
+              </button>
+            )}
           </div>
 
           <div className="toolbar-group" role="group" aria-label="测量工具">
@@ -2352,7 +2377,7 @@ export default function App() {
           <button
             type="button"
             className="tool-button"
-            title="快捷键速查表"
+            title="快捷键与鼠标速查表"
             aria-haspopup="dialog"
             aria-expanded={showHelp}
             onClick={() => setShowHelp(true)}

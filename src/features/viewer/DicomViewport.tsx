@@ -2,8 +2,8 @@
  * M1 视口组件：Cornerstone3D StackViewport + @cornerstonejs/tools 工具绑定
  * + 信息覆盖文字与像素探针。
  *
- * - 挂载期创建共享渲染引擎上的视口与专属 ToolGroup（滚轮翻页/Ctrl+滚轮缩放/
- *   中键平移/左键窗宽窗位，见 toolSetup.ts）；
+ * - 挂载期创建共享渲染引擎上的视口与专属 ToolGroup（M11-F3 矩阵：左键平移/
+ *   中键调窗/右键翻层/滚轮翻页/Ctrl+滚轮缩放，见 toolSetup.ts）；
  * - 堆栈变化时 setStack、应用默认窗宽窗位并同步层数状态；
  * - 订阅 STACK_VIEWPORT_SCROLL / VOI_MODIFIED / CAMERA_MODIFIED 事件，
  *   驱动层滑块、WW/WL 输入框与缩放比例显示；

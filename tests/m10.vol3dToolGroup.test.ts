@@ -1,6 +1,7 @@
 /**
- * M10-C 3D ToolGroup 装配（FR-7.1 交互）：左键旋转/中键平移/滚轮缩放 +
- * OrientationMarker 方位指示；addTool 先于 setToolActive；幂等注册。
+ * M10-C 3D ToolGroup 装配（FR-7.1 交互；M11-F3 绑定矩阵）：
+ * 左键平移/中键调窗/右键旋转/滚轮缩放 + OrientationMarker 方位指示；
+ * addTool 先于 setToolActive；幂等注册（含 M11-F3 新增 WindowLevelTool）。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -27,6 +28,7 @@ vi.mock('@cornerstonejs/tools', () => {
       setToolActive: vi.fn((toolName: string) => {
         calls.push(`setToolActive:${toolName}`);
       }),
+      setToolPassive: vi.fn(),
     };
     toolGroups.push(group);
     return group;
@@ -41,6 +43,7 @@ vi.mock('@cornerstonejs/tools', () => {
     TrackballRotateTool: defineTool('TrackballRotate'),
     PanTool: defineTool('Pan'),
     ZoomTool: defineTool('Zoom'),
+    WindowLevelTool: defineTool('WindowLevel'),
     OrientationMarkerTool: defineTool('OrientationMarker'),
     ToolGroupManager: {
       createToolGroup: vi.fn((engineId: string) => createFakeToolGroup(engineId)),
@@ -70,7 +73,7 @@ function lastFakeToolGroup(): FakeToolGroup {
   return group as unknown as FakeToolGroup;
 }
 
-const VOL3D_TOOL_ORDER = ['TrackballRotate', 'Pan', 'Zoom', 'OrientationMarker'];
+const VOL3D_TOOL_ORDER = ['TrackballRotate', 'Pan', 'Zoom', 'WindowLevel', 'OrientationMarker'];
 
 describe('createVolume3dToolGroup（FR-7.1 交互）', () => {
   beforeEach(() => {
@@ -98,14 +101,17 @@ describe('createVolume3dToolGroup（FR-7.1 交互）', () => {
     expect(firstActive).toBeGreaterThan(lastAddTool);
   });
 
-  it('绑定默认：左键旋转、中键平移、滚轮缩放（FR-7.1 鼠标约定）', () => {
+  it('绑定默认（M11-F3 矩阵）：左键平移、中键调窗、右键旋转、滚轮缩放', () => {
     createVolume3dToolGroup('engine-c');
     const group = lastFakeToolGroup();
-    expect(group.setToolActive).toHaveBeenCalledWith('TrackballRotate', {
+    expect(group.setToolActive).toHaveBeenCalledWith('Pan', {
       bindings: [{ mouseButton: 1 }],
     });
-    expect(group.setToolActive).toHaveBeenCalledWith('Pan', {
+    expect(group.setToolActive).toHaveBeenCalledWith('WindowLevel', {
       bindings: [{ mouseButton: 4 }],
+    });
+    expect(group.setToolActive).toHaveBeenCalledWith('TrackballRotate', {
+      bindings: [{ mouseButton: 2 }],
     });
     expect(group.setToolActive).toHaveBeenCalledWith('Zoom', {
       bindings: [{ mouseButton: 524288 }],
@@ -129,19 +135,23 @@ describe('createVolume3dToolGroup（FR-7.1 交互）', () => {
 });
 
 describe('initializeVolume3dTools', () => {
-  it('注册 TrackballRotate / OrientationMarker 到全局工具表且幂等', async () => {
+  it('注册 TrackballRotate / OrientationMarker / WindowLevel 到全局工具表且幂等', async () => {
     const tools = await import('@cornerstonejs/tools');
     vi.mocked(tools.init).mockClear();
     vi.mocked(tools.addTool).mockClear();
     await initializeVolume3dTools();
     await initializeVolume3dTools();
     expect(tools.init).toHaveBeenCalledTimes(1);
-    expect(tools.addTool).toHaveBeenCalledTimes(2);
+    // M11-F3：TrackballRotate + OrientationMarker + WindowLevel = 3 个
+    expect(tools.addTool).toHaveBeenCalledTimes(3);
     expect(tools.addTool).toHaveBeenCalledWith(
       expect.objectContaining({ toolName: 'TrackballRotate' }),
     );
     expect(tools.addTool).toHaveBeenCalledWith(
       expect.objectContaining({ toolName: 'OrientationMarker' }),
+    );
+    expect(tools.addTool).toHaveBeenCalledWith(
+      expect.objectContaining({ toolName: 'WindowLevel' }),
     );
   });
 });

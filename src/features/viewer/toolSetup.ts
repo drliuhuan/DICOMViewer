@@ -1,15 +1,18 @@
 /**
  * @cornerstonejs/tools 集成（M1，FR-3.2/3.5/3.6/3.7）。
  *
- * 绑定方案（遵循主流阅片软件惯例，FR-3.7 默认滚轮=翻页）：
- * - WindowLevelTool  左键拖动调节窗宽窗位（默认主工具）
- * - PanTool          中键(Auxiliary)拖动平移；亦可作为左键主工具激活
+ * 绑定方案（M11-F3 鼠标按键矩阵，遵循主流阅片软件惯例，FR-3.7 默认滚轮=翻页）：
+ * - PanTool          左键(Primary)拖动平移（默认主工具/基础交互）
+ * - WindowLevelTool  中键(Auxiliary)按住拖动调窗（常驻，任何主工具下可用）；
+ *                    亦可经 W/工具栏切为左键主工具（左键拖动调窗）
+ * - StackScrollTool  右键(Secondary)按住拖动翻层 + 滚轮翻页（无修饰键）；
+ *                    亦可作为左键主工具激活
  * - ZoomTool         Ctrl+滚轮 以光标为中心缩放；亦可作为左键主工具激活
- * - StackScrollTool  滚轮翻页（无修饰键）；作为左键主工具激活时拖动翻层
  *
  * 切换「主工具」= 把 Primary 按钮分配给目标工具，其余工具退出 Primary：
- * 主工具 Active（Primary + 常驻绑定），其余三个仅保留各自互不冲突的
- * 常驻绑定（中键平移/Ctrl+滚轮缩放/滚轮翻页），见 syncToolBindings。
+ * 主工具 Active（Primary + 常驻绑定），其余工具仅保留各自互不冲突的
+ * 常驻绑定（中键调窗/Ctrl+滚轮缩放/滚轮翻页/右键翻层），见 syncToolBindings。
+ * 测量类工具激活时占 Primary，切回后左键回归默认主工具 Pan。
  *
  * 测量类工具（Length/Angle/RectangleROI/EllipticalROI/Probe）已由 M10-D 转正：
  * 可作为左键主工具激活（点击工具栏「长度/角度/矩形/椭圆」或快捷键
@@ -110,9 +113,16 @@ export const ALL_TOOL_NAMES: readonly string[] = [
   ...MEASUREMENT_TOOLS,
 ];
 
-/** 各工具的常驻绑定（不随主工具切换而丢失） */
+/** 默认主工具（左键基础交互）：平移（M11-F3，原为窗宽窗位） */
+export const DEFAULT_PRIMARY_TOOL: string = ToolNames.pan;
+
+/**
+ * 各工具的常驻绑定（不随主工具切换而丢失）。
+ * M11-F3：中键=窗宽窗位（常驻）、右键=翻层（常驻）、滚轮=翻页、
+ * Ctrl+滚轮=缩放；Pan 仅在作为主工具时持 Primary，无常驻绑定。
+ */
 const PERSISTENT_BINDINGS: Readonly<Record<string, readonly ToolBinding[]>> = {
-  [ToolNames.pan]: [{ mouseButton: MouseBindings.Auxiliary }],
+  [ToolNames.windowLevel]: [{ mouseButton: MouseBindings.Auxiliary }],
   [ToolNames.zoom]: [
     { mouseButton: MouseBindings.Wheel, modifierKey: KeyboardBindings.Ctrl },
     // 双指触摸（FR-14.1/AC-28）：numTouchPoints 绑定不占用鼠标键，
@@ -120,7 +130,10 @@ const PERSISTENT_BINDINGS: Readonly<Record<string, readonly ToolBinding[]>> = {
     // ZoomTool 内置 pinchToZoom 捏合缩放 + pan 双指平移。
     { numTouchPoints: 2 },
   ],
-  [ToolNames.stackScroll]: [{ mouseButton: MouseBindings.Wheel }],
+  [ToolNames.stackScroll]: [
+    { mouseButton: MouseBindings.Wheel },
+    { mouseButton: MouseBindings.Secondary },
+  ],
 };
 
 let toolsReadyPromise: Promise<void> | null = null;
@@ -156,7 +169,7 @@ export function initializeTools(): Promise<void> {
 }
 
 /**
- * 为视口创建 ToolGroup 并应用默认绑定（主工具=窗宽窗位）。
+ * 为视口创建 ToolGroup 并应用默认绑定（主工具=平移，M11-F3）。
  * 调用前须完成 initializeTools()。
  *
  * ToolGroup id 必须按视口唯一：ToolGroupManager 以 id 全局唯一存储，
@@ -179,7 +192,7 @@ export function createBoundToolGroup(
     toolGroup.addTool(toolName);
   }
   toolGroup.addViewport(viewportId, renderingEngineId);
-  syncToolBindings(toolGroup, ToolNames.windowLevel);
+  syncToolBindings(toolGroup, DEFAULT_PRIMARY_TOOL);
   return toolGroup;
 }
 
@@ -189,22 +202,26 @@ export function createBoundToolGroup(
  * Cornerstone3D 的 setToolActive 会把新 bindings 与旧 bindings **合并**
  * （ToolGroup.js: [...prevBindings, ...newBindings] 去重），传 bindings:[]
  * 并不能清掉历史 Primary —— 这正是「切换只换高亮不换行为」缺陷的根因：
- * WindowLevel 永远残留 Primary，事件派发（getActiveToolForMouseEvent）
- * 按 addTool 顺序遍历 toolOptions，先命中 WindowLevel → 永远窗宽窗位。
+ * 旧主工具永远残留 Primary，事件派发（getActiveToolForMouseEvent）
+ * 按 addTool 顺序遍历 toolOptions，先命中的永远是旧工具。
  *
  * 因此这里统一采用「先 setToolPassive 剥离 Primary，再按目标状态重建」：
  * - setToolPassive 默认移除 Primary 绑定并保留其余绑定；
- *   若仍有剩余绑定则保持 Active（中键平移/Ctrl+滚轮缩放/滚轮翻页因此不丢）；
+ *   若仍有剩余绑定则保持 Active（中键调窗/Ctrl+滚轮缩放/滚轮翻页/
+ *   右键翻层因此不丢）；
  * - 随后按需重建：主工具拿 Primary + 各自常驻绑定；非主工具仅常驻绑定。
  *   （对从未激活过的工具，passive 后无任何绑定，必须显式重建常驻绑定。）
  *
- * @param primary 目标主工具名；传 null 视为恢复默认（窗宽窗位）
+ * @param primary 目标主工具名；传 null 或未知工具名视为恢复默认（平移，
+ *   M11-F3；跨视图布局切换时携带了目标 ToolGroup 不存在的工具名也安全）
  */
 export function syncToolBindings(
   toolGroup: ToolGroup,
   primary: string | null,
 ): void {
-  const activeTool = primary ?? ToolNames.windowLevel;
+  // 未知工具名（如 2D ToolGroup 收到 MPR 的 Crosshairs）回退默认主工具
+  const known = primary !== null && (PRIMARY_SELECTABLE_TOOLS as readonly string[]).includes(primary);
+  const activeTool = known ? primary : DEFAULT_PRIMARY_TOOL;
   for (const toolName of PRIMARY_SELECTABLE_TOOLS) {
     // 剥离历史 Primary 绑定（避免 merge 残留），保留常驻绑定
     toolGroup.setToolPassive(toolName);
@@ -216,7 +233,7 @@ export function syncToolBindings(
       // 与 passive 保留下的常驻绑定合并去重后即为目标绑定集合
       toolGroup.setToolActive(toolName, { bindings });
     }
-    // windowLevel / 测量工具 无常驻绑定且非主工具时停在 Passive：不再响应任何鼠标输入
+    // pan / 测量工具 无常驻绑定且非主工具时停在 Passive：不再响应任何鼠标输入
   }
 }
 

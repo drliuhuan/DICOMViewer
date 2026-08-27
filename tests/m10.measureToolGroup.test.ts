@@ -12,7 +12,7 @@ vi.mock('@cornerstonejs/tools', () => {
   }
   return {
     Enums: {
-      MouseBindings: { Primary: 1, Auxiliary: 4, Wheel: 524288 },
+      MouseBindings: { Primary: 1, Secondary: 2, Auxiliary: 4, Wheel: 524288 },
       KeyboardBindings: { Ctrl: 17 },
     },
     init: vi.fn(),
@@ -93,7 +93,7 @@ describe('测量工具转正（M10-D 解占位）', () => {
     expect(MEASUREMENT_TOOLS).toContain(ToolNames.probe);
   });
 
-  it('切到长度工具：Length 持 Primary，窗宽窗位退出 Primary 且无鼠标键', () => {
+  it('切到长度工具：Length 持 Primary，窗宽窗位退出 Primary 但保留中键常驻（M11-F3）', () => {
     const sim = createSim();
     syncToolBindings(sim as unknown as Types.IToolGroup, ToolNames.length);
 
@@ -101,20 +101,24 @@ describe('测量工具转正（M10-D 解占位）', () => {
     expect(sim.options[ToolNames.length]!.bindings).toContainEqual({
       mouseButton: Enums.MouseBindings.Primary,
     });
-    expect(sim.options[ToolNames.windowLevel]).toMatchObject({ mode: 'Passive' });
-    expect(
-      sim.options[ToolNames.windowLevel]!.bindings.filter((b) => b.mouseButton !== undefined),
-    ).toEqual([]);
-    // 常驻绑定不丢：中键平移 / Ctrl+滚轮缩放 / 滚轮翻页
-    expect(sim.options[ToolNames.pan]!.bindings).toContainEqual({
+    // M11-F3：窗宽窗位不再独占 Primary，但中键（Auxiliary）常驻不丢
+    expect(sim.options[ToolNames.windowLevel]).toMatchObject({ mode: 'Active' });
+    expect(sim.options[ToolNames.windowLevel]!.bindings).toContainEqual({
       mouseButton: Enums.MouseBindings.Auxiliary,
     });
+    expect(sim.options[ToolNames.windowLevel]!.bindings).not.toContainEqual({
+      mouseButton: Enums.MouseBindings.Primary,
+    });
+    // 常驻绑定不丢：Ctrl+滚轮缩放 / 滚轮翻页 + 右键翻层（M11-F3）
     expect(sim.options[ToolNames.zoom]!.bindings).toContainEqual({
       mouseButton: Enums.MouseBindings.Wheel,
       modifierKey: Enums.KeyboardBindings.Ctrl,
     });
     expect(sim.options[ToolNames.stackScroll]!.bindings).toContainEqual({
       mouseButton: Enums.MouseBindings.Wheel,
+    });
+    expect(sim.options[ToolNames.stackScroll]!.bindings).toContainEqual({
+      mouseButton: Enums.MouseBindings.Secondary,
     });
     expect(primaryHolders(sim)).toEqual([ToolNames.length]);
   });
@@ -149,6 +153,7 @@ describe('测量工具转正（M10-D 解占位）', () => {
         (b) => b.mouseButton === Enums.MouseBindings.Primary && b.modifierKey === undefined,
       ),
     ).toBe(false);
-    expect(primaryHolders(sim)).toEqual([ToolNames.windowLevel]);
+    // M11-F3：null 回归默认主工具=Pan（左键平移）
+    expect(primaryHolders(sim)).toEqual([ToolNames.pan]);
   });
 });

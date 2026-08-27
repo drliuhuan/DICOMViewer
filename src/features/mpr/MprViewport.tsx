@@ -3,10 +3,12 @@
  *
  * - 轴向/冠状/矢状三个 VolumeViewport（ViewportType.ORTHOGRAPHIC）共用
  *   同一 RenderingEngine 与同一共享 volume（FR-6.8，GPU 重采样，不逐视口重建）；
- * - CrosshairsTool（Secondary 右键拖线）联动三平面：拖任一定位线或滚轮翻层，
- *   其余平面实时刷新；定位线颜色按医学惯例红=矢状/绿=冠状/黄=轴向；
+ * - CrosshairsTool 联动三平面（M11-F3 方案 a）：默认 Passive（定位线渲染并
+ *   随相机联动），经工具栏「定位线」按钮激活为主工具后左键拖线移动交心；
+ *   定位线颜色按医学惯例红=矢状/绿=冠状/黄=轴向；
  * - 厚度模式（FR-6.4）：平均 / MIP / MinIP + 厚度 1–100mm 滑杆，作用于三视口；
- * - 基础操作继承（FR-6.6）：左键窗宽窗位 / 中键平移 / Ctrl+滚轮缩放 / 滚轮翻层
+ * - 基础操作继承（FR-6.6，M11-F3 矩阵）：左键平移（默认主工具）/
+ *   中键窗宽窗位（常驻）/ 右键滚层 + 滚轮翻层 / Ctrl+滚轮缩放
  *   （ToolGroup 装配见 mprToolGroup.ts）；
  * - 挂载期构建共享 volume（mprVolume.buildMprVolume，含逐帧 IPP provider），
  *   卸载期销毁 ToolGroup / 视口并释放 volume 与 GPU 资源（FR-7.12 同类）。
@@ -69,6 +71,7 @@ import {
   createMprToolGroup,
   destroyMprToolGroup,
   initializeMprTools,
+  MPR_DEFAULT_PRIMARY_TOOL,
   planeTint,
   syncMprToolBindings,
 } from './mprToolGroup';
@@ -100,7 +103,7 @@ export interface MprViewportProps {
   stack: SeriesStack;
   seriesUid: string;
   showInfo: boolean;
-  /** 当前左键主工具（测量 FR-5.15 / 窗宽窗位 FR-6.6），由 App 工具栏同步 */
+  /** 当前左键主工具（默认平移；测量 FR-5.15 / 定位线 M11-F3），由 App 工具栏同步 */
   primaryTool?: string;
   /** 面板「跳转」请求（FR-5.9）：切到指定平面视口帧；id 递增触发 */
   jump?: { id: number; viewportId: string; sliceIndex: number } | null;
@@ -122,7 +125,7 @@ export function MprViewport({
   stack,
   seriesUid,
   showInfo,
-  primaryTool = 'WindowLevel',
+  primaryTool = MPR_DEFAULT_PRIMARY_TOOL,
   jump = null,
   onExitMpr,
   volumeDeps: _volumeDeps,

@@ -28,6 +28,9 @@ vi.mock('@cornerstonejs/tools', () => {
       setToolActive: vi.fn((toolName: string) => {
         calls.push(`setToolActive:${toolName}`);
       }),
+      setToolPassive: vi.fn((toolName: string) => {
+        calls.push(`setToolPassive:${toolName}`);
+      }),
     };
     toolGroups.push(group);
     return group;
@@ -57,13 +60,18 @@ vi.mock('@cornerstonejs/tools', () => {
 });
 
 import { ToolGroupManager } from '@cornerstonejs/tools';
+import type { Types } from '@cornerstonejs/tools';
 import {
+  MPR_CROSSHAIRS_TOOL,
+  MPR_DEFAULT_PRIMARY_TOOL,
+  MPR_PRIMARY_SELECTABLE_TOOLS,
   MPR_REFERENCE_LINE_COLORS,
   createMprToolGroup,
   destroyMprToolGroup,
   initializeMprTools,
   mprToolGroupId,
   planeTint,
+  syncMprToolBindings,
 } from '../src/features/mpr/mprToolGroup';
 
 interface FakeToolGroup {
@@ -71,12 +79,24 @@ interface FakeToolGroup {
   addViewport: ReturnType<typeof vi.fn>;
   addTool: ReturnType<typeof vi.fn>;
   setToolActive: ReturnType<typeof vi.fn>;
+  setToolPassive: ReturnType<typeof vi.fn>;
 }
 
 function lastFakeToolGroup(): FakeToolGroup {
   const group = toolGroups[toolGroups.length - 1];
   if (!group) throw new Error('ToolGroupManager.createToolGroup 未被调用');
   return group as unknown as FakeToolGroup;
+}
+
+/** 独立记录型 fake（调用链断言用，不经 ToolGroupManager） */
+function createFake(): FakeToolGroup {
+  return {
+    id: 'fake',
+    addViewport: vi.fn(),
+    addTool: vi.fn(),
+    setToolActive: vi.fn(),
+    setToolPassive: vi.fn(),
+  };
 }
 
 const MPR_TOOL_ORDER = [
@@ -121,14 +141,16 @@ describe('createMprToolGroup', () => {
     }
   });
 
-  it('addTool 全部先于任何 setToolActive（Cornerstone 坑）', () => {
+  it('addTool 全部先于任何 setToolPassive/setToolActive（Cornerstone 坑）', () => {
     createMprToolGroup('engine-b');
     const addToolCalls = calls.filter((entry) => entry.startsWith('addTool:'));
     expect(addToolCalls).toEqual(MPR_TOOL_ORDER.map((name) => `addTool:${name}`));
     const lastAddTool = calls.lastIndexOf(`addTool:${MPR_TOOL_ORDER[MPR_TOOL_ORDER.length - 1]}`);
-    const firstActive = calls.findIndex((entry) => entry.startsWith('setToolActive'));
+    const firstMode = calls.findIndex(
+      (entry) => entry.startsWith('setToolActive') || entry.startsWith('setToolPassive'),
+    );
     expect(lastAddTool).toBeGreaterThan(-1);
-    expect(firstActive).toBeGreaterThan(lastAddTool);
+    expect(firstMode).toBeGreaterThan(lastAddTool);
   });
 
   it('CrosshairsTool 携带 getReferenceLineColor 配置（按视口平面配色）', () => {
@@ -152,24 +174,26 @@ describe('createMprToolGroup', () => {
     expect(config.getReferenceLineSlabThicknessControlsOn()).toBe(false);
   });
 
-  it('工具绑定：左键窗宽窗位 / 中键平移 / Ctrl+滚轮缩放 / 滚轮翻层 / 右键十字线', () => {
+  it('工具绑定（M11-F3 矩阵）：左键平移 / 中键调窗 / Ctrl+滚轮缩放 / 滚轮+右键翻层；Crosshairs 默认 Passive', () => {
     createMprToolGroup('engine-d');
     const group = lastFakeToolGroup();
-    expect(group.setToolActive).toHaveBeenCalledWith('WindowLevel', {
+    expect(group.setToolActive).toHaveBeenCalledWith('Pan', {
       bindings: [{ mouseButton: 1 }],
     });
-    expect(group.setToolActive).toHaveBeenCalledWith('Pan', {
+    expect(group.setToolActive).toHaveBeenCalledWith('WindowLevel', {
       bindings: [{ mouseButton: 4 }],
     });
     expect(group.setToolActive).toHaveBeenCalledWith('Zoom', {
       bindings: [{ mouseButton: 524288, modifierKey: 17 }],
     });
     expect(group.setToolActive).toHaveBeenCalledWith('StackScroll', {
-      bindings: [{ mouseButton: 524288 }],
+      bindings: [{ mouseButton: 524288 }, { mouseButton: 2 }],
     });
-    expect(group.setToolActive).toHaveBeenCalledWith('Crosshairs', {
-      bindings: [{ mouseButton: 2 }],
-    });
+    // M11-F3 方案 a：Crosshairs 让出 Secondary，默认 Passive（定位线仍渲染联动）
+    expect(group.setToolPassive).toHaveBeenCalledWith('Crosshairs');
+    expect(
+      group.setToolActive.mock.calls.some(([name]) => name === 'Crosshairs'),
+    ).toBe(false);
   });
 
   it('创建失败（null）时抛出明确错误', () => {
@@ -180,6 +204,79 @@ describe('createMprToolGroup', () => {
   it('destroyMprToolGroup 按 id 销毁', () => {
     destroyMprToolGroup('engine-e');
     expect(ToolGroupManager.destroyToolGroup).toHaveBeenCalledWith('engine-e:mpr');
+  });
+});
+
+describe('syncMprToolBindings（M11-F3：Crosshairs 纳入可切换主工具）', () => {
+  beforeEach(() => {
+    calls.length = 0;
+    toolGroups.length = 0;
+  });
+
+  it('MPR_PRIMARY_SELECTABLE_TOOLS 含 Crosshairs；默认主工具=Pan；MPR_CROSSHAIRS_TOOL 导出', () => {
+    expect(MPR_PRIMARY_SELECTABLE_TOOLS).toContain('Crosshairs');
+    expect(MPR_DEFAULT_PRIMARY_TOOL).toBe('Pan');
+    expect(MPR_CROSSHAIRS_TOOL).toBe('Crosshairs');
+  });
+
+  it('默认（null）：Pan 持 Primary；Crosshairs Passive（联动入口=工具栏切换）', () => {
+    const group = createFake();
+    syncMprToolBindings(group as unknown as Types.IToolGroup, null);
+
+    expect(group.setToolActive).toHaveBeenCalledWith('Pan', {
+      bindings: [{ mouseButton: 1 }],
+    });
+    expect(group.setToolPassive).toHaveBeenCalledWith('Crosshairs');
+    expect(
+      group.setToolActive.mock.calls.some(([name]) => name === 'Crosshairs'),
+    ).toBe(false);
+  });
+
+  it('切到 Crosshairs：持 Primary（左键拖线联动三平面）；Pan 退出 Primary', () => {
+    const group = createFake();
+    syncMprToolBindings(group as unknown as Types.IToolGroup, MPR_CROSSHAIRS_TOOL);
+
+    expect(group.setToolActive).toHaveBeenCalledWith('Crosshairs', {
+      bindings: [{ mouseButton: 1 }],
+    });
+    expect(group.setToolPassive).toHaveBeenCalledWith('Pan');
+    expect(
+      group.setToolActive.mock.calls.some(
+        ([name, opts]) => name === 'Pan' && (opts as { bindings: unknown[] }).bindings.some(
+          (b) => (b as { mouseButton: number }).mouseButton === 1,
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it('切到 Crosshairs 后窗宽窗位/翻层/缩放常驻绑定不丢', () => {
+    const group = createFake();
+    syncMprToolBindings(group as unknown as Types.IToolGroup, MPR_CROSSHAIRS_TOOL);
+
+    expect(group.setToolActive).toHaveBeenCalledWith('WindowLevel', {
+      bindings: [{ mouseButton: 4 }],
+    });
+    expect(group.setToolActive).toHaveBeenCalledWith('StackScroll', {
+      bindings: [{ mouseButton: 524288 }, { mouseButton: 2 }],
+    });
+    expect(group.setToolActive).toHaveBeenCalledWith('Zoom', {
+      bindings: [{ mouseButton: 524288, modifierKey: 17 }],
+    });
+  });
+
+  it('测量工具切换后切回 null：Crosshairs 回归 Passive（不残留 Primary）', () => {
+    const group = createFake();
+    syncMprToolBindings(group as unknown as Types.IToolGroup, MPR_CROSSHAIRS_TOOL);
+    syncMprToolBindings(group as unknown as Types.IToolGroup, 'Length');
+    expect(group.setToolActive).toHaveBeenCalledWith('Length', {
+      bindings: [{ mouseButton: 1 }],
+    });
+
+    syncMprToolBindings(group as unknown as Types.IToolGroup, null);
+    expect(group.setToolPassive).toHaveBeenCalledWith('Crosshairs');
+    expect(group.setToolActive).toHaveBeenCalledWith('Pan', {
+      bindings: [{ mouseButton: 1 }],
+    });
   });
 });
 
