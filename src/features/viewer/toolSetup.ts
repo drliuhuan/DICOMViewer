@@ -60,6 +60,8 @@ export const ToolNames = {
   rectangleRoi: RectangleROITool.toolName,
   ellipticalRoi: EllipticalROITool.toolName,
   probe: ProbeTool.toolName,
+  /** M11 任务 3：Cobb 角（两条线段夹角，cornerstone 内置 CobbAngleTool） */
+  cobbAngle: 'CobbAngle',
 } as const;
 
 export type PrimaryDragTool =
@@ -71,15 +73,17 @@ export type PrimaryDragTool =
   | typeof ToolNames.angle
   | typeof ToolNames.rectangleRoi
   | typeof ToolNames.ellipticalRoi
-  | typeof ToolNames.probe;
+  | typeof ToolNames.probe
+  | typeof ToolNames.cobbAngle;
 
-/** 测量工具（M10-D 转正：FR-5.1~5.6 主工具入口） */
+/** 测量工具（M10-D 转正：FR-5.1~5.6 主工具入口；M11 追加 Cobb 角） */
 export const MEASUREMENT_TOOLS: readonly string[] = [
   ToolNames.length,
   ToolNames.angle,
   ToolNames.rectangleRoi,
   ToolNames.ellipticalRoi,
   ToolNames.probe,
+  ToolNames.cobbAngle,
 ];
 
 /** 左键可切换为「主」工具的全部工具（常驻交互 + 测量） */
@@ -136,6 +140,17 @@ export function initializeTools(): Promise<void> {
     addTool(RectangleROITool);
     addTool(EllipticalROITool);
     addTool(ProbeTool);
+    // M11 任务 3：Cobb 角（运行时动态装载内置 CobbAngleTool 的增强子类；
+    // 装载失败（mock 环境/包缺失）静默跳过，不影响其它工具）
+    try {
+      const { loadCobbAngleTool } = await import('../measure/cobbAngleToolRuntime');
+      const CobbClass = await loadCobbAngleTool();
+      if (CobbClass !== null) {
+        addTool(CobbClass as never);
+      }
+    } catch {
+      // 降级：不提供 Cobb 工具
+    }
   })();
   return toolsReadyPromise;
 }

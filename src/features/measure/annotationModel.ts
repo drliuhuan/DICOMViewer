@@ -73,6 +73,8 @@ const TOOL_LABELS: Readonly<Record<string, string>> = {
   EllipticalROI: '椭圆 ROI',
   Probe: '点标注',
   ArrowAnnotate: '箭头标注',
+  // M11 任务 3：Cobb 角（两条线段夹角）
+  CobbAngle: 'Cobb 角',
 };
 
 export function annotationToolLabel(toolName: string): string {
@@ -83,10 +85,11 @@ export function annotationToolLabel(toolName: string): string {
 const TOOL_SORT_ORDER: Readonly<Record<string, number>> = {
   Length: 0,
   Angle: 1,
-  RectangleROI: 2,
-  EllipticalROI: 3,
-  Probe: 4,
-  ArrowAnnotate: 5,
+  CobbAngle: 2,
+  RectangleROI: 3,
+  EllipticalROI: 4,
+  Probe: 5,
+  ArrowAnnotate: 6,
 };
 
 /** 取 cachedStats 的第一个 targetId 条目 */
@@ -200,6 +203,40 @@ function format2Point(
   return formatFixed2(d2) ?? '--';
 }
 
+/** Cobb 角标注摘录（两线段夹角 + 两段线长度；M11 任务 3） */
+function describeCobbAngle(
+  annotation: AnnotationLike,
+): { value: number | null; unit: string | null; text: string; lines: string[] } {
+  const stats = firstCachedStats(annotation);
+  // 显示角优先（医学补角语义），回退内置方向无关角
+  const display =
+    typeof stats?.displayAngle === 'number'
+      ? (stats.displayAngle as number)
+      : typeof stats?.angle === 'number'
+        ? (stats.angle as number)
+        : undefined;
+  const points = annotation.data?.handles?.points;
+  const lines: string[] = [];
+  if (points !== undefined && points.length >= 4) {
+    const lenA = typeof stats?.lineALengthMm === 'number' ? (stats.lineALengthMm as number) : null;
+    const lenB = typeof stats?.lineBLengthMm === 'number' ? (stats.lineBLengthMm as number) : null;
+    lines.push(
+      `线段 A ${lenA !== null ? (formatFixed2(lenA, 'mm') ?? '--') : '--'}`,
+    );
+    lines.push(
+      `线段 B ${lenB !== null ? (formatFixed2(lenB, 'mm') ?? '--') : '--'}`,
+    );
+  }
+  // 角度符号紧贴数值，与既有角度工具排版一致
+  const base = formatFixed2(display);
+  return {
+    value: display ?? null,
+    unit: '°',
+    text: base !== null ? `夹角 ${base}°` : 'Cobb 角 --',
+    lines,
+  };
+}
+
 /** ROI 标注摘录（均值/标准差/最小/最大/面积 mm²/像素数，FR-5.3/5.4） */
 function describeRoi(
   annotation: AnnotationLike,
@@ -289,6 +326,8 @@ export function snapshotAnnotation(
     detail = describeLength(annotation);
   } else if (toolName === 'Angle') {
     detail = describeAngle(annotation);
+  } else if (toolName === 'CobbAngle') {
+    detail = describeCobbAngle(annotation);
   } else if (toolName === 'RectangleROI' || toolName === 'EllipticalROI') {
     detail = describeRoi(annotation);
   } else if (toolName === 'Probe') {

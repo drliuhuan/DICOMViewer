@@ -12,7 +12,8 @@ export type PrimaryToolKey =
   | 'length'
   | 'angle'
   | 'rectangleRoi'
-  | 'ellipticalRoi';
+  | 'ellipticalRoi'
+  | 'cobbAngle';
 
 export type ShortcutAction =
   | { type: 'toggleInfo' }
@@ -93,13 +94,16 @@ export function resolveShortcut(event: KeyEventLike): ShortcutAction | null {
       return { type: 'tool', tool: 'pan' };
     case 'z':
       return { type: 'tool', tool: 'zoom' };
-    // 测量工具快捷键（M10-D 转正）：L 长度 / A 角度 / R 矩形 / O 椭圆（FR-5.1~5.4）
+    // 测量工具快捷键（M10-D 转正）：L 长度 / A 角度 / R 矩形 / O 椭圆；
+    // M11 任务 3 追加：K Cobb 角（两条线段夹角）
     case 'l':
       return { type: 'tool', tool: 'length' };
     case 'a':
       return { type: 'tool', tool: 'angle' };
     case 'o':
       return { type: 'tool', tool: 'ellipticalRoi' };
+    case 'k':
+      return { type: 'tool', tool: 'cobbAngle' };
     case 'f':
       return { type: 'fit' };
     // Cine 播放（FR-3.8 P1）：空格键播放/暂停

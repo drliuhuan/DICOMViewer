@@ -84,7 +84,8 @@ describe('测量工具转正（M10-D 解占位）', () => {
   });
 
   it('MEASUREMENT_TOOLS 覆盖 5 个测量工具名', () => {
-    expect(MEASUREMENT_TOOLS).toHaveLength(5);
+    // M11 任务 3：新增 Cobb 角后为 6 个测量工具（原断言长度同步更新）
+    expect(MEASUREMENT_TOOLS).toHaveLength(6);
     expect(MEASUREMENT_TOOLS).toContain(ToolNames.length);
     expect(MEASUREMENT_TOOLS).toContain(ToolNames.angle);
     expect(MEASUREMENT_TOOLS).toContain(ToolNames.rectangleRoi);

@@ -110,8 +110,9 @@ describe('ALL_TOOL_NAMES', () => {
       ToolNames.stackScroll,
       ...MEASUREMENT_TOOLS,
     ]);
-    expect(MEASUREMENT_TOOLS).toHaveLength(5);
-    expect(ALL_TOOL_NAMES).toHaveLength(9);
+    // M11 任务 3：新增 Cobb 角（CobbAngle），测量工具 5 → 6，总注册 9 → 10
+    expect(MEASUREMENT_TOOLS).toHaveLength(6);
+    expect(ALL_TOOL_NAMES).toHaveLength(10);
   });
 });
 

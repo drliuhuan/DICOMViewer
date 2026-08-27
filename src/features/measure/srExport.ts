@@ -14,6 +14,7 @@
 import { adapters, data } from 'dcmjs';
 import type { AnnotationLike } from './annotationModel';
 import { baseImageIdOf } from './annotationModel';
+import { cobbEndpointsForSr } from './cobbGeometry';
 
 /** cornerstone V4 测量适配器（dcmjs 公开导出，接收扁平测量结构） */
 const { MeasurementReport } = adapters.Cornerstone;
@@ -25,6 +26,9 @@ export const SR_TOOL_TYPE_MAP: Readonly<Record<string, string>> = {
   Angle: 'Angle',
   RectangleROI: 'RectangleRoi',
   EllipticalROI: 'EllipticalRoi',
+  // M11 任务 3：Cobb 角沿用 Angle（TID1419 三点半角）通道——
+  // 四点两线由 cobbGeometry.cobbEndpointsForSr 折算为 start/middle/end
+  CobbAngle: 'Angle',
 } as const;
 
 export const SR_SOP_CLASS_UID = '1.2.840.10008.5.1.4.1.1.88.33'; // ComprehensiveSR
@@ -110,6 +114,26 @@ export function annotationToV4Measurement(annotation: AnnotationLike): unknown |
   }
 
   if (srType === 'Angle') {
+    // M11 任务 3：Cobb 角（四点两线）→ 三点半角表示（顶点=两线交点，
+    // start/end 取各自离交点最远的端点）；平行/共线或点位不足时跳过。
+    if (toolName === 'CobbAngle') {
+      const statsEntry = target ?? undefined;
+      const displayAngle =
+        typeof statsEntry?.displayAngle === 'number'
+          ? (statsEntry.displayAngle as number)
+          : typeof statsEntry?.angle === 'number'
+            ? (statsEntry.angle as number)
+            : undefined;
+      if (displayAngle === undefined) {
+        return null;
+      }
+      const apex = cobbEndpointsForSr(points);
+      if (apex === null) {
+        return null; // 平行线无交点，无法折算三点半角
+      }
+      return { handles: apex, rAngle: displayAngle };
+    }
+
     const angle = typeof target?.angle === 'number' ? target.angle : undefined;
     if (angle === undefined || points.length < 3) {
       return null;

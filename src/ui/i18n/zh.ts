@@ -19,7 +19,7 @@ export const ZH: Record<string, string> = {
   'help.row.windowLevel': '窗宽窗位工具',
   'help.row.pan': '平移工具',
   'help.row.zoom': '缩放工具',
-  'help.row.measure': '测量工具：L 长度 / A 角度 / R 矩形 ROI / O 椭圆 ROI',
+  'help.row.measure': '测量工具：L 长度 / A 角度 / K Cobb 角 / R 矩形 ROI / O 椭圆 ROI',
   'help.row.zoomKeys': '放大 / 缩小',
   'help.row.layout': '切换布局 1×1 / 1×2 / 2×2',
   'help.row.slice': '上一帧 / 下一帧',

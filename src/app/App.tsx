@@ -1979,6 +1979,14 @@ export default function App() {
             >
               椭圆
             </button>
+            <button
+              type="button"
+              className={`tool-button${primaryTool === ToolNames.cobbAngle ? ' tool-button--active' : ''}`}
+              title="Cobb 角测量：依次画两条线段，显示夹角与两线长度（钝角显示补角；快捷键 K）"
+              onClick={() => activateTool(ToolNames.cobbAngle)}
+            >
+              Cobb
+            </button>
             {hasStack && activeSeriesNeedsCalibration && (
               <button
                 type="button"

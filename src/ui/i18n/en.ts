@@ -20,7 +20,8 @@ export const EN: Record<string, string> = {
   'help.row.windowLevel': 'Window/level tool',
   'help.row.pan': 'Pan tool',
   'help.row.zoom': 'Zoom tool',
-  'help.row.measure': 'Measurement tools (coming in a later milestone)',
+  'help.row.measure':
+    'Measurement tools: L length / A angle / K Cobb angle / R rectangle ROI / O ellipse ROI',
   'help.row.zoomKeys': 'Zoom in / Zoom out',
   'help.row.layout': 'Switch layout 1x1 / 1x2 / 2x2',
   'help.row.slice': 'Previous / next slice',
