@@ -10,6 +10,7 @@
  * - 基础操作继承（FR-6.6，M11-F3 矩阵）：左键平移（默认主工具）/
  *   中键窗宽窗位（常驻）/ 右键滚层 + 滚轮翻层 / Ctrl+滚轮缩放
  *   （ToolGroup 装配见 mprToolGroup.ts）；
+ * - 视口容器屏蔽浏览器原生右键菜单（M11-F4：右键拖动滚层时菜单不再弹出）；
  * - 挂载期构建共享 volume（mprVolume.buildMprVolume，含逐帧 IPP provider），
  *   卸载期销毁 ToolGroup / 视口并释放 volume 与 GPU 资源（FR-7.12 同类）。
  *
@@ -512,6 +513,9 @@ export function MprViewport({
                   ref={(element) => {
                     elementsRef.current[plane] = element ?? undefined;
                   }}
+                  // M11-F4：屏蔽浏览器原生右键菜单（右键拖动滚层时干扰操作），
+                  // 仅 preventDefault，不拦截 mousedown/mousemove 事件流。
+                  onContextMenu={(event) => event.preventDefault()}
                 />
                 <div
                   className="mpr-plane-tint"

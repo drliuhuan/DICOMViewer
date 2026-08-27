@@ -8,6 +8,8 @@
  * - 订阅 STACK_VIEWPORT_SCROLL / VOI_MODIFIED / CAMERA_MODIFIED 事件，
  *   驱动层滑块、WW/WL 输入框与缩放比例显示；
  * - 光标移动时采样像素值（经 Modality LUT 显示 HU，FR-4.5）；
+ * - 视口容器屏蔽浏览器原生右键菜单（M11-F4：右键拖动翻层时菜单不再弹出，
+ *   仅 preventDefault，不拦截 mousedown/mousemove 事件流）；
  * - 通过 onApiReady 上报命令式操作接口，供工具栏与全局快捷键调用。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -730,7 +732,15 @@ export function DicomViewport({
 
   return (
     <div className="viewport-container">
-      <div className="cornerstone-element" ref={containerRef} />
+      {/* M11-F4：屏蔽浏览器原生右键菜单（右键拖动翻层时干扰操作）。
+          仅 preventDefault 阻止默认菜单，不 stopPropagation/不拦截
+          mousedown/mousemove 事件流，cornerstone 右键交互不受影响；
+          视口外（面板/工具栏）右键粘贴等浏览器能力不受影响。 */}
+      <div
+        className="cornerstone-element"
+        ref={containerRef}
+        onContextMenu={(event) => event.preventDefault()}
+      />
       {renderError !== null && (
         <div role="alert" className="viewport-error">
           图像显示失败：{renderError}

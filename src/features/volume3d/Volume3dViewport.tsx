@@ -11,6 +11,7 @@
  *   变更与 2D 激活视口双向同步；
  * - 质量档位（FR-7.7）+ 渐进式渲染（FR-7.6，交互低质量、静止提升）；
  * - 裁剪平面（FR-7.4）：轴/冠/矢三向滑杆，映射到 volume mapper 硬件裁剪；
+ * - 视口容器屏蔽浏览器原生右键菜单（M11-F4：右键拖动旋转时菜单不再弹出）；
  * - 复位视角（FR-7.9）：一键恢复轴位俯视默认视角；
  * - 3D 截图（FR-7.8）：当前视角 canvas 导出 PNG；
  * - 内存释放（FR-7.12）：卸载时销毁 ToolGroup/禁用视口并删除 volume 缓存
@@ -690,6 +691,9 @@ export function Volume3dViewport({
               ref={(element) => {
                 elementRef.current = element;
               }}
+              // M11-F4：屏蔽浏览器原生右键菜单（右键拖动旋转时干扰操作），
+              // 仅 preventDefault，不拦截 mousedown/mousemove 事件流。
+              onContextMenu={(event) => event.preventDefault()}
             />
             {status === 'ready' && showInfo && overlaySummary !== undefined && (
               <InfoOverlay
