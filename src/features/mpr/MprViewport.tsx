@@ -18,6 +18,11 @@
  *   TODO(FR-6.5)：斜切 MPR（在任一平面画线/旋转角度生成沿该方向的斜切平面，
  *   任意角度重切）——采集 + 手绘线段 + oblique VolumeViewport 相机重建链路
  *   成本较高，本里程碑未实施（CrosshairsTool 旋转手柄已含于定位线交互）。
+ *   TODO(M11-F2)：三平面视口尚未做容器尺寸变化的 ResizeObserver +
+ *     renderingEngine.resize(immediate=true, keepCamera=true) 自适应
+ *     （Cornerstone3D 仅在 enableElement 时按元素当时尺寸设 canvas，其后
+ *     窗口缩放/面板变化不会自动重算，会拉伸变形）。2D DicomViewport 与
+ *     Volume3dViewport 均有同类实现可参照；本次按范围只修 3D，MPR 后补。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {

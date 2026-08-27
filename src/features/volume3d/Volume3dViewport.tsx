@@ -298,6 +298,44 @@ export function Volume3dViewport({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stack, seriesUid, volumeDeps]);
 
+  // 布局/窗口尺寸变化时按容器新尺寸重排 3D 视口（M11-F2，与 2D DicomViewport
+  // 同一模式）：Cornerstone3D 仅在 enableElement 时按元素当时尺寸设置 canvas，
+  // 其后容器变化（窗口缩放、面板收起、工具栏换行等）不会自动重算，需显式
+  // renderingEngine.resize(immediate, keepCamera)。keepCamera=true 保留用户
+  // 旋转/平移/缩放状态（WW/WL 为视口属性，不受影响）；immediate=true 时库内
+  // 部会调度重新渲染。注意：MPR 视口目前没有同等处理（MprViewport TODO）。
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') {
+      return undefined;
+    }
+    let rafId = 0;
+    // rAF 合并：过渡期间连续触发的回调只执行最后一次
+    const scheduleResize = () => {
+      if (rafId !== 0) {
+        return;
+      }
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        try {
+          engineRef.current?.resize(true, true); // immediate + keepCamera
+        } catch {
+          // 引擎销毁等卸载竞态：静默忽略
+        }
+      });
+    };
+    const observer = new ResizeObserver(scheduleResize);
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      if (rafId !== 0) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+    };
+    // elementRef/engineRef 均为 ref，不进依赖数组（观察挂载容器本身）
+  }, []);
+
   // 预设切换（FR-7.2）：重赋色/不透明度传递函数，并保持当前窗宽窗位映射范围
   useEffect(() => {
     if (status !== 'ready') {
@@ -629,23 +667,38 @@ export function Volume3dViewport({
       </div>
 
       <div className="viewer-grid-wrap mpr-grid-wrap">
-        <div className="viewport-cell viewport-cell--active">
-          <div
-            className="cornerstone-element"
-            ref={(element) => {
-              elementRef.current = element;
-            }}
-          />
-          {status === 'ready' && showInfo && overlaySummary !== undefined && (
-            <InfoOverlay
-              summary={overlaySummary}
-              sliceLabel="—"
-              ww={ww}
-              wl={wl}
-              zoomPercent={0}
-              probe={null}
+        {/*
+          * M11-F2 黑屏修复：与 MprViewport 同构，`.viewport-cell` 必须包在
+          * `.viewer-grid`（styles.css：display:grid + width/height 100%，
+          * 且 grid 轨道用 minmax(0,1fr) 允许收缩）内。缺这层包装时 cell 是
+          * wrap（flex:1、min-height:0）下的 block 子元素，高度由内容决定
+          * → canvas 容器 0 高 → vtk 按 0 高创建/适配 canvas → 主显示区全黑。
+          */}
+        <div
+          className="viewer-grid"
+          style={{
+            gridTemplateColumns: 'minmax(0, 1fr)',
+            gridTemplateRows: 'minmax(0, 1fr)',
+          }}
+        >
+          <div className="viewport-cell viewport-cell--active">
+            <div
+              className="cornerstone-element"
+              ref={(element) => {
+                elementRef.current = element;
+              }}
             />
-          )}
+            {status === 'ready' && showInfo && overlaySummary !== undefined && (
+              <InfoOverlay
+                summary={overlaySummary}
+                sliceLabel="—"
+                ww={ww}
+                wl={wl}
+                zoomPercent={0}
+                probe={null}
+              />
+            )}
+          </div>
         </div>
 
         {(status === 'initializing' || status === 'building') && (

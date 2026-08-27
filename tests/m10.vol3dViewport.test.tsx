@@ -5,7 +5,7 @@
  * 渲染交互 mock 掉（@cornerstonejs/core|tools + apply 的 vtk 装配）。
  */
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const { engine } = vi.hoisted(() => {
@@ -34,6 +34,8 @@ const { engine } = vi.hoisted(() => {
       return created;
     }),
     disableElement: vi.fn(),
+    // M11-F2：容器尺寸自适应（ResizeObserver → resize(immediate, keepCamera)）
+    resize: vi.fn(),
   };
   return { engine, viewports };
 });
@@ -434,5 +436,164 @@ describe('Volume3dViewport 卸载释放（FR-7.12）', () => {
     });
     expect(destroyToolGroup).toHaveBeenCalledWith('dicom-viewer-m1-engine:vol3d');
     expect(engine.disableElement).toHaveBeenCalledWith('vol3d-main');
+  });
+});
+
+describe('Volume3dViewport 容器结构/尺寸自适应（M11-F2 黑屏修复）', () => {
+  /**
+   * 根因回归锁定：3D 布局的 `.viewport-cell` 曾直接挂在 `.mpr-grid-wrap`
+   * （flex 子级、min-height:0）下而缺 `.viewer-grid`（display:grid +
+   * 宽高 100%）包装 → block 级 cell 高度由内容决定 → canvas 容器 0 高
+   * → vtk 按 0 高创建 canvas → 主显示区全黑。
+   * 尺寸自适应与 tests/m1.viewportResize.test.tsx 同款手法：mock
+   * ResizeObserver + 手动驱动 rAF。
+   */
+  class ResizeObserverMock {
+    static instances: ResizeObserverMock[] = [];
+    observe = vi.fn();
+    disconnect = vi.fn();
+    callback: ResizeObserverCallback;
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback;
+      ResizeObserverMock.instances.push(this);
+    }
+    trigger(): void {
+      this.callback([] as unknown as ResizeObserverEntry[], this as unknown as ResizeObserver);
+    }
+  }
+
+  let rafCallbacks: Array<() => void>;
+  function flushRaf(): void {
+    const pending = rafCallbacks;
+    rafCallbacks = [];
+    for (const cb of pending) {
+      cb();
+    }
+  }
+
+  beforeEach(() => {
+    ResizeObserverMock.instances = [];
+    rafCallbacks = [];
+    vi.stubGlobal('ResizeObserver', ResizeObserverMock as unknown as typeof ResizeObserver);
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => {
+      rafCallbacks.push(cb);
+      return rafCallbacks.length;
+    });
+    vi.stubGlobal('cancelAnimationFrame', () => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function renderReady() {
+    const view = render(
+      <Volume3dViewport
+        stack={makeStack(2)}
+        seriesUid="1.2.s"
+        showInfo={false}
+        onExitVolume3d={vi.fn()}
+        volumeDeps={makeVolumeDeps()}
+        webgl2
+      />,
+    );
+    await waitFor(() => {
+      expect(engine.enableElement).toHaveBeenCalledTimes(1);
+    });
+    await screen.findByText('3D 体绘制');
+    return view;
+  }
+
+  it('容器层级：mpr-grid-wrap > viewer-grid > viewport-cell > cornerstone-element（不允许 wrap 直接子级 cell）', async () => {
+    const { container } = await renderReady();
+    const wrap = container.querySelector<HTMLDivElement>('.mpr-grid-wrap');
+    expect(wrap).toBeTruthy();
+
+    // .viewport-cell 必须包在 .viewer-grid 内且撑满（单行/单列 minmax(0,1fr)）
+    const grid = Array.from(wrap!.children).find((child) =>
+      child.classList.contains('viewer-grid'),
+    ) as HTMLDivElement | undefined;
+    expect(grid).toBeTruthy();
+    expect(grid!.style.gridTemplateColumns).toBe('minmax(0, 1fr)');
+    expect(grid!.style.gridTemplateRows).toBe('minmax(0, 1fr)');
+
+    const cell = Array.from(grid!.children).find((child) =>
+      child.classList.contains('viewport-cell--active'),
+    ) as HTMLDivElement | undefined;
+    expect(cell).toBeTruthy();
+    const csElement = cell!.querySelector<HTMLDivElement>('.cornerstone-element');
+    expect(csElement).toBeTruthy();
+
+    // 旧塌陷结构回归哨兵：wrap 的直接子级里不得再出现 viewport-cell
+    for (const child of Array.from(wrap!.children)) {
+      expect(child.classList.contains('viewport-cell')).toBe(false);
+    }
+  });
+
+  it('挂载时创建 ResizeObserver 并观察 cornerstone-element；卸载时断开', async () => {
+    const { unmount } = await renderReady();
+    expect(ResizeObserverMock.instances).toHaveLength(1);
+    const observer = ResizeObserverMock.instances[0]!;
+    expect(observer.observe).toHaveBeenCalledTimes(1);
+    const observed = observer.observe.mock.calls[0]?.[0] as Element | undefined;
+    expect(observed?.classList.contains('cornerstone-element')).toBe(true);
+
+    expect(observer.disconnect).not.toHaveBeenCalled();
+    unmount();
+    expect(observer.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('容器尺寸变化触发 engine.resize(true, true)（immediate + keepCamera）', async () => {
+    await renderReady();
+    ResizeObserverMock.instances[0]!.trigger();
+    expect(rafCallbacks).toHaveLength(1);
+    flushRaf();
+    expect(engine.resize).toHaveBeenCalledTimes(1);
+    expect(engine.resize).toHaveBeenCalledWith(true, true);
+
+    // resize 抛错（引擎销毁竞态）静默吞掉，不影响下一轮调度
+    engine.resize.mockImplementationOnce(() => {
+      throw new Error('engine destroyed');
+    });
+    ResizeObserverMock.instances[0]!.trigger();
+    flushRaf();
+    expect(engine.resize).toHaveBeenCalledTimes(2);
+    expect(rafCallbacks).toHaveLength(0);
+  });
+
+  it('rAF 防抖：连续多次尺寸回调合并为一次 resize，下一帧后可再次调度', async () => {
+    await renderReady();
+    const observer = ResizeObserverMock.instances[0]!;
+    observer.trigger();
+    observer.trigger();
+    observer.trigger();
+    expect(rafCallbacks).toHaveLength(1);
+    flushRaf();
+    expect(engine.resize).toHaveBeenCalledTimes(1);
+    // 消费后回到待命态：新回调再次入队（持续响应布局变化）
+    observer.trigger();
+    expect(rafCallbacks).toHaveLength(1);
+  });
+
+  it('引擎未就绪（初始化前触发 RO 回调）时不抛错且不调用 resize', async () => {
+    render(
+      <Volume3dViewport
+        stack={makeStack(2)}
+        seriesUid="1.2.s"
+        showInfo={false}
+        onExitVolume3d={vi.fn()}
+        volumeDeps={makeVolumeDeps()}
+        webgl2
+      />,
+    );
+    // init 是异步的：此刻 RO 已挂上但 engineRef 仍为 null
+    expect(ResizeObserverMock.instances.length).toBeGreaterThan(0);
+    expect(() => {
+      for (const instance of ResizeObserverMock.instances) {
+        instance.trigger();
+      }
+      flushRaf();
+    }).not.toThrow();
+    expect(engine.resize).not.toHaveBeenCalled();
   });
 });
