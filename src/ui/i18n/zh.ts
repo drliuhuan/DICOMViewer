@@ -41,4 +41,23 @@ export const ZH: Record<string, string> = {
   'settings.thumbCache': '缩略图缓存上限（条）',
   'settings.reset': '恢复默认设置',
   'settings.close': '关闭设置',
+
+  'entry.pick.titleMpr': '进入 MPR：选择序列',
+  'entry.pick.titleVol3d': '进入 3D 体绘制：选择序列',
+  'entry.pick.hint':
+    '将按所选序列的完整来源核对并补载全部实例（含未打开文件/远端缺失实例）后再重建',
+  'entry.pick.group': '候选序列列表',
+  'entry.pick.slices': '{count} 层',
+  'entry.pick.instances': '{count} 个实例',
+  'entry.pick.needsCheck': '完整性待核对',
+  'entry.pick.progress': '补载进度',
+  'entry.pick.cancelFillShort': '取消补载',
+  'entry.pick.cancelFill': '取消本次完整序列补载',
+  'entry.pick.confirm': '确认进入',
+  'entry.pick.confirmHint': '核对该序列完整实例后进入对应布局',
+  'entry.pick.back': '返回',
+  'entry.pick.close': '关闭序列选择',
+  'entry.fill.rescan': '正在重扫本地目录…',
+  'entry.fill.pacs': '正在按 SeriesUID 核对并补拉缺失实例…',
+  'entry.fill.failedPrefix': '完整序列补载失败：',
 };

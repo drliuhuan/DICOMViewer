@@ -55,10 +55,31 @@ import {
   type SeriesStack,
   type StackItem,
 } from '../features/series/buildStacks';
+import {
+  registerSourceBatch,
+  getSourceBatch,
+  listSourceBatches,
+  clearSourceBatches,
+  recordBatchOutcome,
+} from '../features/series/sourceRegistry';
+import {
+  assessSeriesCompleteness,
+  resolveRemoteContext,
+} from '../features/series/seriesCompleteness';
+import {
+  decideSeriesEntry,
+  type SeriesCandidateRow,
+} from '../features/series/entryDecision';
+import { fillFromDirectory, fillFromPacs } from '../features/series/fillSeries';
 import { buildSeriesTree } from '../features/series/seriesTree';
 import { SeriesPanel } from '../ui/components/SeriesPanel';
 import { HelpOverlay } from '../ui/components/HelpOverlay';
 import { SettingsPanel } from '../ui/components/SettingsPanel';
+import {
+  SeriesPickerDialog,
+  type SeriesPickTarget,
+  type SeriesPickerBusy,
+} from '../ui/components/SeriesPickerDialog';
 import { readMprReferenceCenter } from '../features/mpr/referenceLines';
 import {
   CINE_DEFAULT_FPS,
@@ -282,6 +303,18 @@ export default function App() {
     viewportId: string;
     sliceIndex: number;
   } | null>(null);
+  /**
+   * MPR/3D 进入前置的序列选择对话框（M11 任务 1）：多候选或当前序列
+   * 未核对完整时弹出；busy 为补载进度；error 为补载失败提示（中文）。
+   */
+  const [seriesPick, setSeriesPick] = useState<{
+    open: boolean;
+    target: SeriesPickTarget | null;
+    candidates: readonly SeriesCandidateRow[];
+    busy: SeriesPickerBusy | null;
+    error: string | null;
+  }>({ open: false, target: null, candidates: [], busy: null, error: null });
+  const seriesPickAbortRef = useRef<AbortController | null>(null);
 
   /** 文件打开能力（FR-14.3）：iOS 无文件夹选择 → 提示 + 多选文件引导 */
   const fileAccess = useMemo(
@@ -466,14 +499,52 @@ export default function App() {
     assignmentsRef.current = assignments;
   }, [assignments]);
 
+  /**
+   * 已解析实例并入既有管线（M11 提炼公共合并路径）：
+   * SOPInstanceUID 去重 → 追加累积表 → 重建序列堆栈。
+   * 三个入口（本地打开/远程拉取/进入重建前补载）共用。
+   */
+  const appendOpenedFiles = useCallback(
+    (opened: readonly OpenedDicomFile[]) => {
+      const deduped = dedupeBySopUid([...opened], knownUidsRef.current);
+      knownUidsRef.current = deduped.nextUids;
+      openedFilesRef.current = [...openedFilesRef.current, ...deduped.kept];
+      setSeriesList(buildSeriesStacks(openedFilesRef.current));
+      return deduped;
+    },
+    [],
+  );
+
   const handleFiles = useCallback(
-    async (inputs: readonly (ScannedFile | File)[]) => {
+    async (
+      inputs: readonly (ScannedFile | File)[],
+      provenance?: {
+        kind: 'directory' | 'file-list';
+        label: string;
+        directoryHandle?: DirectoryHandleLike;
+      },
+    ) => {
       if (inputs.length === 0) {
         return;
       }
       const controller = new AbortController();
       abortRef.current = controller;
       setLoadState({ status: 'loading', done: 0, total: inputs.length });
+      // 来源登记（M11 任务 1）：directory 批次保留句柄供进入 MPR/3D 时重扫补齐
+      const batchId = registerSourceBatch(
+        provenance?.kind === 'directory'
+          ? {
+              kind: 'directory',
+              label: provenance.label,
+              scannedCount: inputs.length,
+              directoryHandle: provenance.directoryHandle,
+            }
+          : {
+              kind: 'file-list',
+              label: provenance?.label ?? '手动选择文件',
+              scannedCount: inputs.length,
+            },
+      );
       try {
         const {
           opened,
@@ -489,15 +560,21 @@ export default function App() {
           },
         });
         // FR-1.11 去重：SOPInstanceUID 已存在（历史批次或本批次内）则跳过
-        const deduped = dedupeBySopUid(opened, knownUidsRef.current);
-        knownUidsRef.current = deduped.nextUids;
-        openedFilesRef.current = [...openedFilesRef.current, ...deduped.kept];
-        const stacks = buildSeriesStacks(openedFilesRef.current);
-        setSeriesList(stacks);
+        const deduped = appendOpenedFiles(opened);
+        recordBatchOutcome(batchId, {
+          completed: !cancelled,
+          failedNames: failed.map((failure) => failure.fileName),
+          openedFiles: deduped.kept.map((file) => ({
+            fileName: file.fileName,
+            fileSizeBytes: file.fileSizeBytes,
+            seriesInstanceUid: file.summary.seriesInstanceUid,
+          })),
+        });
         setFailures(failed);
         if (deduped.duplicateCount > 0) {
           showToast(`已跳过 ${deduped.duplicateCount} 个重复文件`);
         }
+        const stacks = buildSeriesStacks(openedFilesRef.current);
         if (stacks.length === 0) {
           setLoadState(
             cancelled
@@ -537,7 +614,7 @@ export default function App() {
         }
       }
     },
-    [showToast],
+    [appendOpenedFiles, showToast],
   );
 
   /** 取消当前解析：保留已完成的文件，丢弃未开始的（FR-1.6） */
@@ -554,20 +631,41 @@ export default function App() {
   /**
    * 远程拉取的实例并入现有序列树（FR-13.6）：
    * 与本地文件共用去重/注册表/序列堆栈管线（解析已在 PACS 面板完成）。
+   * M11 任务 1：登记 remote 批次（服务器配置快照），供进入 MPR/3D 时
+   * 按 SeriesUID 核对并补拉缺失实例。
    */
   const handleRemoteStudies = useCallback(
-    (opened: OpenedDicomFile[]) => {
+    (
+      opened: OpenedDicomFile[],
+      remote?: { serverName: string; studyUid: string; config: PacsServerConfig },
+    ) => {
       if (opened.length === 0) {
         return;
       }
-      const deduped = dedupeBySopUid(opened, knownUidsRef.current);
-      knownUidsRef.current = deduped.nextUids;
-      openedFilesRef.current = [...openedFilesRef.current, ...deduped.kept];
+      const batchId = registerSourceBatch(
+        remote
+          ? {
+              kind: 'remote',
+              label: `远程 · ${remote.serverName}`,
+              scannedCount: opened.length,
+              remote,
+            }
+          : {
+              kind: 'remote',
+              label: '远程拉取',
+              scannedCount: opened.length,
+            },
+      );
+      const deduped = appendOpenedFiles(opened);
+      recordBatchOutcome(batchId, {
+        completed: true,
+        openedFiles: deduped.kept.map((file) => ({
+          fileName: file.fileName,
+          fileSizeBytes: file.fileSizeBytes,
+          seriesInstanceUid: file.summary.seriesInstanceUid,
+        })),
+      });
       const stacks = buildSeriesStacks(openedFilesRef.current);
-      setSeriesList(stacks);
-      if (deduped.duplicateCount > 0) {
-        showToast(`已跳过 ${deduped.duplicateCount} 个重复文件`);
-      }
       const anyLoaded = Object.values(assignmentsRef.current).some((uid) => uid !== null);
       if (!anyLoaded) {
         const firstUid = stacks[0]?.seriesUid ?? null;
@@ -578,7 +676,7 @@ export default function App() {
       }
       setLoadState({ status: 'loaded' });
     },
-    [showToast],
+    [appendOpenedFiles, showToast],
   );
 
   /** 「打开文件夹」：Chromium 走 File System Access API，其余浏览器走 webkitdirectory 输入框 */
@@ -593,7 +691,12 @@ export default function App() {
         return;
       }
       const scanned = await scanDirectoryHandle(handle as unknown as DirectoryHandleLike);
-      void handleFiles(scanned);
+      // M11 任务 1：目录句柄登记到来源批次，进入 MPR/3D 时可重扫补齐同序列未打开文件
+      void handleFiles(scanned, {
+        kind: 'directory',
+        label: handle.name || '所选文件夹',
+        directoryHandle: handle as unknown as DirectoryHandleLike,
+      });
     } catch (error) {
       if ((error as { name?: string } | null)?.name === 'AbortError') {
         return; // 用户取消选择
@@ -644,7 +747,7 @@ export default function App() {
             showToast('当前浏览器不支持拖拽文件夹，请使用「打开文件夹」按钮');
             return;
           }
-          await handleFiles(result.files);
+          await handleFiles(result.files, { kind: 'file-list', label: '拖入文件' });
         } catch (error) {
           console.error('[App] 读取拖入的文件/文件夹失败', error);
           showToast('读取拖入内容失败，请改用「打开文件」按钮');
@@ -959,6 +1062,8 @@ export default function App() {
     }
     openedFilesRef.current = [];
     knownUidsRef.current = new Set();
+    // 同步清空序列来源登记（M11 任务 1）
+    clearSourceBatches();
     // 清空标注状态与全部校准登记（FR-5.10/5.9）
     clearAllAnnotations(annotationOps);
     for (const stack of seriesList) {
@@ -1012,57 +1117,306 @@ export default function App() {
     setMprLayout((prev) => exitMprLayout(prev));
   }, [mprLayout]);
 
-  const toggleMpr = useCallback(() => {
+  /**
+   * 序列完整性评估（进入 MPR/3D 时使用，M11 任务 1）：
+   * 远程上下文解析失败也归属「未核对」，原因文案优先展示配置问题。
+   */
+  const assessForEntry = useCallback(
+    (stack: SeriesStack): { needsCheck: boolean; reason?: string } => {
+      const info = assessSeriesCompleteness(stack);
+      if (info.fillKind === 'pacs') {
+        const resolved = resolveRemoteContext(info, stack, pacsServers);
+        return { needsCheck: info.needsCheck, reason: resolved.error ?? info.reason };
+      }
+      return { needsCheck: info.needsCheck, reason: info.reason };
+    },
+    [pacsServers],
+  );
+
+  /** 进入 MPR 布局（含互斥退出 3D / 停 Cine / 清参考线） */
+  const applyMprLayoutFor = useCallback(
+    (seriesUid: string) => {
+      setVol3dLayout((prev) =>
+        prev.mode === 'on' ? exitVolume3dLayout(prev) : prev,
+      );
+      stopAllCine();
+      setMprRefCenter(null);
+      setMprLayout((prev) =>
+        prev.mode === 'on' ? prev : enterMprLayout(prev, seriesUid, LAYOUT_CONFIG[layout].cells),
+      );
+    },
+    [layout, stopAllCine],
+  );
+
+  /** 进入 3D 布局（含互斥退出 MPR / 停 Cine） */
+  const applyVol3dLayoutFor = useCallback(
+    (seriesUid: string) => {
+      setMprLayout((prev) => (prev.mode === 'on' ? exitMprLayout(prev) : prev));
+      stopAllCine();
+      setVol3dLayout((prev) =>
+        prev.mode === 'on'
+          ? prev
+          : enterVolume3dLayout(prev, seriesUid, LAYOUT_CONFIG[layout].cells),
+      );
+    },
+    [layout, stopAllCine],
+  );
+
+  /** 关闭序列选择器并中止进行中的补载 */
+  const closeSeriesPick = useCallback(() => {
+    seriesPickAbortRef.current?.abort();
+    seriesPickAbortRef.current = null;
+    setSeriesPick({
+      open: false,
+      target: null,
+      candidates: [],
+      busy: null,
+      error: null,
+    });
+  }, []);
+
+  /**
+   * 选定序列 → 从完整来源核对并补载全部实例 → 重跑门槛 → 进入布局。
+   * M11 任务 1 核心：volume 构建不再依赖「当前已打开的可见层面」。
+   */
+  const confirmSeriesEntry = useCallback(
+    async (target: SeriesPickTarget, seriesUid: string) => {
+      const controller = new AbortController();
+      seriesPickAbortRef.current = controller;
+      try {
+        const from = <T,>(stacks: readonly SeriesStack[]): T | undefined =>
+          stacks.find((item) => item.seriesUid === seriesUid) as T | undefined;
+        let stack =
+          from<SeriesStack>(buildSeriesStacks(openedFilesRef.current)) ?? null;
+        if (stack === null) {
+          throw new Error('所选序列的数据已被关闭或清空，请重新选择');
+        }
+
+        // ── 完整来源核对与补载（本地目录重扫 / PACS 按 SeriesUID 补拉）──
+        let addedCount = 0;
+        let failureSuffix = '';
+        const info = assessSeriesCompleteness(stack);
+        const resolved = resolveRemoteContext(info, stack, pacsServers);
+        if (resolved.error !== undefined) {
+          throw new Error(resolved.error);
+        }
+        if (info.needsCheck && info.fillKind !== 'none') {
+          const stageLabel =
+            info.fillKind === 'directory'
+              ? translate(settings.language, 'entry.fill.rescan')
+              : translate(settings.language, 'entry.fill.pacs');
+          setSeriesPick((prev) => ({
+            ...prev,
+            busy: { stageLabel, done: 0, total: 0 },
+            error: null,
+          }));
+          const onProgress = (done: number, total: number) => {
+            if (!controller.signal.aborted) {
+              setSeriesPick((prev) => ({
+                ...prev,
+                busy: { stageLabel, done, total },
+              }));
+            }
+          };
+          let result;
+          if (info.fillKind === 'directory') {
+            const batch = info.batchId !== undefined ? getSourceBatch(info.batchId) : undefined;
+            const handle = batch?.directoryHandle;
+            if (!handle) {
+              throw new Error('目录句柄不可用（可能因页面刷新失效），请重新打开该文件夹后再试');
+            }
+            result = await fillFromDirectory({
+              directoryHandle: handle,
+              targetSeriesUid: seriesUid,
+              openedFileKeys: batch.openedFileKeys,
+              signal: controller.signal,
+              onProgress: ({ done, total }) => onProgress(done, total),
+            });
+          } else if (resolved.remote !== undefined) {
+            const knownSopUids = new Set<string>();
+            for (const file of openedFilesRef.current) {
+              if (
+                file.summary.seriesInstanceUid === seriesUid &&
+                file.summary.sopInstanceUid
+              ) {
+                knownSopUids.add(file.summary.sopInstanceUid);
+              }
+            }
+            result = await fillFromPacs({
+              context: resolved.remote,
+              targetSeriesUid: seriesUid,
+              knownSopUids,
+              signal: controller.signal,
+              onProgress: ({ done, total }) => onProgress(done, total),
+            });
+          } else {
+            result = { added: [], failures: [], checkedCount: 0, cancelled: false };
+          }
+          if (result.failures.length > 0) {
+            failureSuffix = `；${result.failures.length} 个文件失败`;
+          }
+          if (result.cancelled) {
+            showToast('已取消完整序列补载');
+            closeSeriesPick();
+            return;
+          }
+          if (result.added.length > 0) {
+            const deduped = appendOpenedFiles(result.added);
+            addedCount = deduped.kept.length;
+            // 补载结果回写来源登记，后续再进重建不重复探测同一批文件
+            if (info.fillKind === 'directory' && info.batchId !== undefined) {
+              recordBatchOutcome(info.batchId, {
+                completed: true,
+                openedFiles: deduped.kept.map((file) => ({
+                  fileName: file.fileName,
+                  fileSizeBytes: file.fileSizeBytes,
+                  seriesInstanceUid: file.summary.seriesInstanceUid,
+                })),
+              });
+            } else if (info.fillKind === 'pacs') {
+              const matched = listSourceBatches().find(
+                (batch) =>
+                  batch.kind === 'remote' &&
+                  batch.remote?.serverName === resolved.remote?.serverName &&
+                  batch.remote?.studyUid === resolved.remote?.studyUid,
+              );
+              if (matched) {
+                recordBatchOutcome(matched.id, {
+                  completed: true,
+                  openedFiles: deduped.kept.map((file) => ({
+                    fileName: file.fileName,
+                    fileSizeBytes: file.fileSizeBytes,
+                    seriesInstanceUid: file.summary.seriesInstanceUid,
+                  })),
+                });
+              }
+            }
+            // 合并后重新取堆栈（React state 尚未刷新）
+            stack =
+              from<SeriesStack>(buildSeriesStacks(openedFilesRef.current)) ?? stack;
+          }
+        }
+
+        // ── 数据门槛终检（补载后的完整集合）→ 进入对应布局 ──
+        const finalGate =
+          target === 'mpr'
+            ? checkMprEligibility(stack)
+            : checkVolume3dEligibility(stack, webgl2);
+        if (!finalGate.allowed || stack === null) {
+          throw new Error(finalGate.message ?? (target === 'mpr' ? 'MPR 不可用' : '3D 不可用'));
+        }
+        if (target === 'mpr') {
+          applyMprLayoutFor(seriesUid);
+        } else {
+          applyVol3dLayoutFor(seriesUid);
+        }
+        closeSeriesPick();
+        if (addedCount > 0) {
+          showToast(`已补载 ${addedCount} 个缺失实例${failureSuffix}`);
+        } else if (failureSuffix !== '') {
+          showToast(`部分文件核对失败${failureSuffix}`);
+        }
+      } catch (error) {
+        console.error('[App] 完整序列补载失败', error);
+        const message =
+          error instanceof Error ? error.message : String(error);
+        setSeriesPick((prev) =>
+          prev.open
+            ? { ...prev, busy: null, error: `${translate(settings.language, 'entry.fill.failedPrefix')}${message}` }
+            : prev,
+        );
+      } finally {
+        if (seriesPickAbortRef.current === controller) {
+          seriesPickAbortRef.current = null;
+        }
+      }
+    },
+    [
+      appendOpenedFiles,
+      applyMprLayoutFor,
+      applyVol3dLayoutFor,
+      closeSeriesPick,
+      pacsServers,
+      settings.language,
+      showToast,
+      webgl2,
+    ],
+  );
+
+  /** 一键「单轴向 ⇄ 三平面」（FR-6.9）+ M11 序列选择前置（多候选/未核对完整性时弹窗） */
+  const beginMprEntry = useCallback(() => {
     if (mprLayout.mode === 'on') {
       exitMprAndCapture();
       return;
     }
-    const stack = stackByUid.get(assignments[activeViewportId] ?? '') ?? null;
-    const gate = checkMprEligibility(stack);
-    if (!gate.allowed) {
-      showToast(gate.message ?? 'MPR 不可用');
+    const decision = decideSeriesEntry({
+      stacks: seriesList,
+      preferredUid: assignments[activeViewportId] ?? null,
+      assess: assessForEntry,
+      targetLabel: 'MPR',
+    });
+    if (decision.action === 'error') {
+      showToast(decision.message);
       return;
     }
-    if (stack === null) {
+    if (decision.action === 'enter') {
+      void confirmSeriesEntry('mpr', decision.seriesUid);
       return;
     }
-    // 进入 MPR 时退出 3D（两种模式互斥，共用同一渲染引擎）
-    if (vol3dLayout.mode === 'on') {
-      setVol3dLayout(exitVolume3dLayout(vol3dLayout));
-    }
-    // 进入 MPR：停止 2D Cine 播放并清除旧参考线
-    stopAllCine();
-    setMprRefCenter(null);
-    setMprLayout(
-      enterMprLayout(mprLayout, stack.seriesUid, LAYOUT_CONFIG[layout].cells),
-    );
-  }, [mprLayout, stackByUid, assignments, activeViewportId, layout, showToast, vol3dLayout, stopAllCine, exitMprAndCapture]);
+    setSeriesPick({
+      open: true,
+      target: 'mpr',
+      candidates: decision.candidates,
+      busy: null,
+      error: null,
+    });
+  }, [
+    activeViewportId,
+    assignments,
+    assessForEntry,
+    confirmSeriesEntry,
+    mprLayout.mode,
+    seriesList,
+    showToast,
+    exitMprAndCapture,
+  ]);
 
-  /** 一键「2D ⇄ 3D 体绘制」（FR-7.1）：进入时锁定量激活序列并快照 2D 布局 */
-  const toggleVol3d = useCallback(() => {
+  /** 一键「2D ⇄ 3D 体绘制」（FR-7.1）+ M11 序列选择前置（多候选/未核对完整性时弹窗） */
+  const beginVol3dEntry = useCallback(() => {
     if (vol3dLayout.mode === 'on') {
       setVol3dLayout(exitVolume3dLayout(vol3dLayout));
       return;
     }
-    const stack = stackByUid.get(assignments[activeViewportId] ?? '') ?? null;
-    const gate = checkVolume3dEligibility(stack, webgl2);
-    if (!gate.allowed) {
-      showToast(gate.message ?? '3D 不可用');
+    const decision = decideSeriesEntry({
+      stacks: seriesList,
+      preferredUid: assignments[activeViewportId] ?? null,
+      assess: assessForEntry,
+      targetLabel: '3D',
+    });
+    if (decision.action === 'error') {
+      showToast(decision.message);
       return;
     }
-    if (stack === null) {
+    if (decision.action === 'enter') {
+      void confirmSeriesEntry('vol3d', decision.seriesUid);
       return;
     }
-    // 进入 3D 时退出 MPR（两种模式互斥，共用同一渲染引擎）
-    if (mprLayout.mode === 'on') {
-      setMprLayout(exitMprLayout(mprLayout));
-    }
-    // 进入 3D：停止 2D Cine 播放
-    stopAllCine();
-    setVol3dLayout(
-      enterVolume3dLayout(vol3dLayout, stack.seriesUid, LAYOUT_CONFIG[layout].cells),
-    );
-  }, [vol3dLayout, stackByUid, assignments, activeViewportId, layout, showToast, webgl2, mprLayout, stopAllCine]);
+    setSeriesPick({
+      open: true,
+      target: 'vol3d',
+      candidates: decision.candidates,
+      busy: null,
+      error: null,
+    });
+  }, [
+    activeViewportId,
+    assignments,
+    assessForEntry,
+    confirmSeriesEntry,
+    seriesList,
+    showToast,
+    vol3dLayout,
+  ]);
 
   // ── 测量 / 标注（FR-5.1~5.13，M10-D） ─────────────────
   /** 当前激活序列是否缺少可用像素间距（FR-5.8 触发校准入口） */
@@ -1463,7 +1817,7 @@ export default function App() {
             aria-label="选择 DICOM 文件（可多选）"
             onChange={(event) => {
               const files = event.target.files ? Array.from(event.target.files) : [];
-              void handleFiles(files);
+              void handleFiles(files, { kind: 'file-list', label: '手动选择文件' });
               event.target.value = '';
             }}
           />
@@ -1474,8 +1828,9 @@ export default function App() {
             className="file-input"
             aria-label="选择 DICOM 文件夹（递归包含子文件夹）"
             onChange={(event) => {
+              // webkitdirectory：相对路径含目录层级，但无句柄可重扫 → file-list 语义
               const files = event.target.files ? Array.from(event.target.files) : [];
-              void handleFiles(files);
+              void handleFiles(files, { kind: 'file-list', label: '文件夹（无重扫句柄）' });
               event.target.value = '';
             }}
           />
@@ -1785,7 +2140,7 @@ export default function App() {
                 ? '退出 MPR 三平面，返回 2D 布局'
                 : (activeMprGate.message ?? 'MPR 多平面重建（单轴向 ⇄ 三平面）')
             }
-            onClick={toggleMpr}
+            onClick={beginMprEntry}
           >
             MPR
           </button>
@@ -1798,7 +2153,7 @@ export default function App() {
                 ? '退出 3D 体绘制，返回 2D 布局'
                 : (activeVol3dGate.message ?? '3D 体绘制（vtk.js 光线投射）')
             }
-            onClick={toggleVol3d}
+            onClick={beginVol3dEntry}
           >
             3D
           </button>
@@ -2027,6 +2382,20 @@ export default function App() {
               </button>
             </aside>
           </>
+        )}
+
+        {seriesPick.open && seriesPick.target !== null && (
+          <SeriesPickerDialog
+            open
+            target={seriesPick.target}
+            candidates={seriesPick.candidates}
+            busy={seriesPick.busy}
+            error={seriesPick.error}
+            onConfirm={(seriesUid) => {
+              void confirmSeriesEntry(seriesPick.target as SeriesPickTarget, seriesUid);
+            }}
+            onCancel={closeSeriesPick}
+          />
         )}
 
         {toast !== null && (

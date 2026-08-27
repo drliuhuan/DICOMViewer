@@ -42,4 +42,23 @@ export const EN: Record<string, string> = {
   'settings.thumbCache': 'Thumbnail cache limit (items)',
   'settings.reset': 'Restore defaults',
   'settings.close': 'Close settings',
+
+  'entry.pick.titleMpr': 'Enter MPR: select a series',
+  'entry.pick.titleVol3d': 'Enter 3D volume rendering: select a series',
+  'entry.pick.hint':
+    'All instances of the selected series (including unopened files / missing remote instances) will be verified and loaded before reconstruction',
+  'entry.pick.group': 'Candidate series list',
+  'entry.pick.slices': '{count} slices',
+  'entry.pick.instances': '{count} instances',
+  'entry.pick.needsCheck': 'Completeness not verified yet',
+  'entry.pick.progress': 'Backfill progress',
+  'entry.pick.cancelFillShort': 'Cancel backfill',
+  'entry.pick.cancelFill': 'Cancel the full-series backfill',
+  'entry.pick.confirm': 'Confirm & enter',
+  'entry.pick.confirmHint': 'Verify complete instances of the series, then enter the layout',
+  'entry.pick.back': 'Back',
+  'entry.pick.close': 'Close series selection',
+  'entry.fill.rescan': 'Rescanning local directory…',
+  'entry.fill.pacs': 'Verifying and fetching missing instances by SeriesUID…',
+  'entry.fill.failedPrefix': 'Full-series backfill failed:',
 };

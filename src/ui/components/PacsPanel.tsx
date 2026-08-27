@@ -33,8 +33,15 @@ interface PacsPanelProps {
   servers: readonly PacsServerConfig[];
   /** 配置变更（App 负责持久化） */
   onServersChange: (servers: PacsServerConfig[]) => void;
-  /** 拉取完成的已解析实例（App 并入现有序列树） */
-  onStudiesFetched: (opened: OpenedDicomFile[]) => void;
+  /**
+   * 拉取完成的已解析实例（App 并入现有序列树）。
+   * M11 任务 1：附带远程上下文（服务器名/检查号/配置快照），
+   * 供进入 MPR/3D 时按 SeriesUID 核对并补拉缺失实例。
+   */
+  onStudiesFetched: (
+    opened: OpenedDicomFile[],
+    remote?: { serverName: string; studyUid: string; config: PacsServerConfig },
+  ) => void;
   onClose: () => void;
   /** 可注入网络层（缺省全局 fetch；单测注入 mock） */
   fetchImpl?: DicomwebFetch;
@@ -234,7 +241,11 @@ export function PacsPanel({
         studyUid,
       });
       if (opened.length > 0) {
-        onStudiesFetched(opened);
+        onStudiesFetched(opened, {
+          serverName: config.name,
+          studyUid,
+          config,
+        });
       }
       const parts = [`拉取完成：成功 ${opened.length} 个实例`];
       if (failures.length > 0) {

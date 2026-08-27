@@ -192,6 +192,11 @@ export async function buildMprVolume(
 /**
  * 浏览器运行时的真实依赖装配：全部延迟动态 import @cornerstonejs/core，
  * 避免模块顶层依赖（Node 单测安全）。
+ *
+ * M11 关键修复：createAndCacheVolume 只完成体数据分配与元数据挂载，
+ * 体素（像素）须显式 await volume.load() 才会从 imageIds 流式载入——
+ * 此前缺这一步，volume 标量数据全零，直接导致「MPR 三平面黑屏 /
+ * 3D 结构缺失」（用户实测报告，M11 任务 1/任务 2 同源根因之一）。
  */
 export function createRealMprVolumeDeps(): MprVolumeBuildDeps {
   return {
@@ -199,7 +204,18 @@ export function createRealMprVolumeDeps(): MprVolumeBuildDeps {
     registerVolumeLoader: () => ensureStreamingVolumeLoaderRegistered(),
     createVolume: async (volumeId, options) => {
       const core = await import('@cornerstonejs/core');
-      return core.volumeLoader.createAndCacheVolume(volumeId, options as never);
+      const volume = await core.volumeLoader.createAndCacheVolume(
+        volumeId,
+        options as never,
+      );
+      // 流式加载全部体素；volume 缺失或无 load（测试桩/降级环境）时保持旧行为
+      const load = volume
+        ? (volume as unknown as { load?: () => Promise<void> }).load
+        : undefined;
+      if (typeof load === 'function') {
+        await load.call(volume);
+      }
+      return volume;
     },
     installFrameIpp: async (stack) => {
       const core = await import('@cornerstonejs/core');

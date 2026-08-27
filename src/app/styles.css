@@ -1485,3 +1485,141 @@ body {
   display: flex;
   justify-content: flex-end;
 }
+
+/* ── MPR/3D 进入前置的序列选择对话框（M11 任务 1） ───── */
+.tool-button--primary {
+  border-color: var(--accent);
+  color: #cfe8ff;
+  background: rgba(58, 160, 255, 0.1);
+}
+
+.tool-button--primary:hover:not(:disabled) {
+  background: rgba(58, 160, 255, 0.2);
+}
+
+.series-picker-panel {
+  width: min(560px, 94vw);
+  max-height: 84vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.series-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.series-picker-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.series-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.series-picker-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.series-picker-row--active {
+  border-color: var(--accent);
+  background: rgba(58, 160, 255, 0.08);
+}
+
+.series-picker-row--locked {
+  cursor: default;
+}
+
+.series-picker-radio {
+  margin-top: 3px;
+}
+
+.series-picker-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.series-picker-line1 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.series-picker-id {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.series-picker-desc {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.series-picker-modality {
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.series-picker-line2 {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.series-picker-warn {
+  color: #ffb454;
+  font-size: 12px;
+}
+
+.series-picker-error {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid #b46a00;
+  border-radius: 6px;
+  color: #ffb454;
+  font-size: 12px;
+}
+
+.series-picker-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.series-picker-progress .load-progress-bar {
+  flex: 1;
+}
+
+.series-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
