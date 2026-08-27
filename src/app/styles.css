@@ -1623,3 +1623,8 @@ body {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* MPR/3D 入口禁用反馈包装（M11 任务 2）：布局中性，点击穿透到 span 以给出提示 */
+.entry-gate-wrap {
+  display: inline-flex;
+}

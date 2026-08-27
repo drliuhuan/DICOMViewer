@@ -54,6 +54,18 @@ export function hasWebGL2(deps: WebGl2DetectDeps = {}): boolean {
 }
 
 /**
+ * 重探 WebGL2（M11 任务 2）：仅当当前不可用时重新检测。
+ *
+ * 背景（「点击 3D 无任何反应」根因之一）：App 在首次渲染时一次性探测
+ * WebGL2 并永久缓存——应用启动早期 GPU 进程繁忙/上下文暂不可用时
+ * 得到 false，之后不再重试，3D 入口按钮被静默禁用且只有悬停提示，
+ * 点击既无报错也无界面变化。改为点击时/聚焦时重探即可恢复。
+ */
+export function refreshWebGL2(current: boolean): boolean {
+  return current ? true : hasWebGL2();
+}
+
+/**
  * 3D 体绘制门槛判定：先看数据（同 MPR，volume 构建所需），
  * 再看 WebGL2。任一不满足即禁用并给出原因提示。
  */

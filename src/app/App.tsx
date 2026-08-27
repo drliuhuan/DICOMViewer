@@ -786,8 +786,43 @@ export default function App() {
     [activeStack],
   );
 
-  /** WebGL2 能力（FR-7.1，检测一次，供 3D 门槛/入口判定） */
-  const webgl2 = useMemo(() => hasWebGL2(), []);
+  /**
+   * WebGL2 能力（FR-7.1，M11 任务 2 修复）：
+   * 原实现为「首次渲染一次性探测并永久缓存」——启动早期 GPU 进程繁忙或
+   * 上下文暂不可用时得到 false，且之后不再重试，3D 入口按钮被静默禁用
+   * （点击无任何反应、仅悬停提示）。改为可重探：值变化驱动门槛/按钮刷新，
+   * 窗口聚焦与入口尝试时重探（已可用则跳过探测开销）。
+   */
+  const [webgl2, setWebgl2Capable] = useState<boolean>(() => hasWebGL2());
+  const webgl2Ref = useRef(webgl2);
+  /** 重探 WebGL2 并同步状态；返回最新能力值（供同一 tick 内的入口判定使用） */
+  const reprobeWebGL2 = useCallback((): boolean => {
+    // 直接调用可注入的 hasWebGL2（gate 内部互引不走 mock，测试与运行时一致）
+    const next = webgl2Ref.current ? true : hasWebGL2();
+    if (next !== webgl2Ref.current) {
+      webgl2Ref.current = next;
+      setWebgl2Capable(next);
+    }
+    return next;
+  }, []);
+  // 启动早期探测失败：本 effect 在能力仍为 false 时兜底重探一次
+  useEffect(() => {
+    if (!webgl2) {
+      reprobeWebGL2();
+    }
+  }, [webgl2, reprobeWebGL2]);
+  // 窗口聚焦重探：GPU 进程恢复/用户外接显卡等场景自动解除误禁用
+  useEffect(() => {
+    const onFocus = () => {
+      // eslint-disable-next-line no-console
+      console.log('[debug] window focus -> reprobe');
+      // eslint-disable-next-line no-console
+      console.log('[debug] window focus -> reprobe');
+      reprobeWebGL2();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [reprobeWebGL2]);
 
   /** 当前激活序列的 3D 门槛判定（FR-7.1，数据 + WebGL2） */
   const activeVol3dGate = useMemo(
@@ -1298,10 +1333,12 @@ export default function App() {
         }
 
         // ── 数据门槛终检（补载后的完整集合）→ 进入对应布局 ──
+        // M11 任务 2：进入尝试时重探 WebGL2（启动早期误判可在此恢复）
+        const capable = reprobeWebGL2();
         const finalGate =
           target === 'mpr'
             ? checkMprEligibility(stack)
-            : checkVolume3dEligibility(stack, webgl2);
+            : checkVolume3dEligibility(stack, capable);
         if (!finalGate.allowed || stack === null) {
           throw new Error(finalGate.message ?? (target === 'mpr' ? 'MPR 不可用' : '3D 不可用'));
         }
@@ -1320,11 +1357,18 @@ export default function App() {
         console.error('[App] 完整序列补载失败', error);
         const message =
           error instanceof Error ? error.message : String(error);
-        setSeriesPick((prev) =>
-          prev.open
-            ? { ...prev, busy: null, error: `${translate(settings.language, 'entry.fill.failedPrefix')}${message}` }
-            : prev,
-        );
+        setSeriesPick((prev) => {
+          if (prev.open) {
+            return {
+              ...prev,
+              busy: null,
+              error: `${translate(settings.language, 'entry.fill.failedPrefix')}${message}`,
+            };
+          }
+          // 直接进入路径（未弹选择器）的失败：toast 明确反馈而非静默
+          showToast(`打开${target === 'mpr' ? 'MPR' : '3D'}失败：${message}`);
+          return prev;
+        });
       } finally {
         if (seriesPickAbortRef.current === controller) {
           seriesPickAbortRef.current = null;
@@ -1337,39 +1381,47 @@ export default function App() {
       applyVol3dLayoutFor,
       closeSeriesPick,
       pacsServers,
+      reprobeWebGL2,
       settings.language,
       showToast,
-      webgl2,
     ],
   );
 
   /** 一键「单轴向 ⇄ 三平面」（FR-6.9）+ M11 序列选择前置（多候选/未核对完整性时弹窗） */
   const beginMprEntry = useCallback(() => {
-    if (mprLayout.mode === 'on') {
-      exitMprAndCapture();
-      return;
+    // M11 任务 2：入口链路的任何异常都转为可见反馈，杜绝静默失败
+    try {
+      if (mprLayout.mode === 'on') {
+        exitMprAndCapture();
+        return;
+      }
+      const decision = decideSeriesEntry({
+        stacks: seriesList,
+        preferredUid: assignments[activeViewportId] ?? null,
+        assess: assessForEntry,
+        targetLabel: 'MPR',
+      });
+      if (decision.action === 'error') {
+        showToast(decision.message);
+        return;
+      }
+      if (decision.action === 'enter') {
+        void confirmSeriesEntry('mpr', decision.seriesUid);
+        return;
+      }
+      setSeriesPick({
+        open: true,
+        target: 'mpr',
+        candidates: decision.candidates,
+        busy: null,
+        error: null,
+      });
+    } catch (error) {
+      console.error('[App] 进入 MPR 失败', error);
+      showToast(
+        `打开MPR失败：${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-    const decision = decideSeriesEntry({
-      stacks: seriesList,
-      preferredUid: assignments[activeViewportId] ?? null,
-      assess: assessForEntry,
-      targetLabel: 'MPR',
-    });
-    if (decision.action === 'error') {
-      showToast(decision.message);
-      return;
-    }
-    if (decision.action === 'enter') {
-      void confirmSeriesEntry('mpr', decision.seriesUid);
-      return;
-    }
-    setSeriesPick({
-      open: true,
-      target: 'mpr',
-      candidates: decision.candidates,
-      busy: null,
-      error: null,
-    });
   }, [
     activeViewportId,
     assignments,
@@ -1383,36 +1435,44 @@ export default function App() {
 
   /** 一键「2D ⇄ 3D 体绘制」（FR-7.1）+ M11 序列选择前置（多候选/未核对完整性时弹窗） */
   const beginVol3dEntry = useCallback(() => {
-    if (vol3dLayout.mode === 'on') {
-      setVol3dLayout(exitVolume3dLayout(vol3dLayout));
-      return;
+    // M11 任务 2：进入尝试先重探 WebGL2；异常转 toast 反馈
+    try {
+      if (vol3dLayout.mode === 'on') {
+        setVol3dLayout(exitVolume3dLayout(vol3dLayout));
+        return;
+      }
+      reprobeWebGL2();
+      const decision = decideSeriesEntry({
+        stacks: seriesList,
+        preferredUid: assignments[activeViewportId] ?? null,
+        assess: assessForEntry,
+        targetLabel: '3D',
+      });
+      if (decision.action === 'error') {
+        showToast(decision.message);
+        return;
+      }
+      if (decision.action === 'enter') {
+        void confirmSeriesEntry('vol3d', decision.seriesUid);
+        return;
+      }
+      setSeriesPick({
+        open: true,
+        target: 'vol3d',
+        candidates: decision.candidates,
+        busy: null,
+        error: null,
+      });
+    } catch (error) {
+      console.error('[App] 进入 3D 失败', error);
+      showToast(`打开3D失败：${error instanceof Error ? error.message : String(error)}`);
     }
-    const decision = decideSeriesEntry({
-      stacks: seriesList,
-      preferredUid: assignments[activeViewportId] ?? null,
-      assess: assessForEntry,
-      targetLabel: '3D',
-    });
-    if (decision.action === 'error') {
-      showToast(decision.message);
-      return;
-    }
-    if (decision.action === 'enter') {
-      void confirmSeriesEntry('vol3d', decision.seriesUid);
-      return;
-    }
-    setSeriesPick({
-      open: true,
-      target: 'vol3d',
-      candidates: decision.candidates,
-      busy: null,
-      error: null,
-    });
   }, [
     activeViewportId,
     assignments,
     assessForEntry,
     confirmSeriesEntry,
+    reprobeWebGL2,
     seriesList,
     showToast,
     vol3dLayout,
@@ -2131,32 +2191,55 @@ export default function App() {
             </div>
           )}
 
-          <button
-            type="button"
-            className={`tool-button${mprLayout.mode === 'on' ? ' tool-button--active' : ''}`}
-            disabled={!activeMprGate.allowed && mprLayout.mode !== 'on'}
-            title={
-              mprLayout.mode === 'on'
-                ? '退出 MPR 三平面，返回 2D 布局'
-                : (activeMprGate.message ?? 'MPR 多平面重建（单轴向 ⇄ 三平面）')
-            }
-            onClick={beginMprEntry}
+          {/* M11 任务 2：禁用态的入口按钮点击不再无声——外层捕获点击并给出原因提示 */}
+          <span
+            className="entry-gate-wrap"
+            onClick={() => {
+              if (!activeMprGate.allowed && mprLayout.mode !== 'on') {
+                showToast(
+                  `MPR 当前不可用：${activeMprGate.message ?? '数据不满足重建要求'}`,
+                );
+              }
+            }}
           >
-            MPR
-          </button>
-          <button
-            type="button"
-            className={`tool-button${vol3dLayout.mode === 'on' ? ' tool-button--active' : ''}`}
-            disabled={!activeVol3dGate.allowed && vol3dLayout.mode !== 'on'}
-            title={
-              vol3dLayout.mode === 'on'
-                ? '退出 3D 体绘制，返回 2D 布局'
-                : (activeVol3dGate.message ?? '3D 体绘制（vtk.js 光线投射）')
-            }
-            onClick={beginVol3dEntry}
+            <button
+              type="button"
+              className={`tool-button${mprLayout.mode === 'on' ? ' tool-button--active' : ''}`}
+              disabled={!activeMprGate.allowed && mprLayout.mode !== 'on'}
+              title={
+                mprLayout.mode === 'on'
+                  ? '退出 MPR 三平面，返回 2D 布局'
+                  : (activeMprGate.message ?? 'MPR 多平面重建（单轴向 ⇄ 三平面）')
+              }
+              onClick={beginMprEntry}
+            >
+              MPR
+            </button>
+          </span>
+          <span
+            className="entry-gate-wrap"
+            onClick={() => {
+              if (!activeVol3dGate.allowed && vol3dLayout.mode !== 'on') {
+                showToast(
+                  `3D 当前不可用：${activeVol3dGate.message ?? 'WebGL2 或数据不满足要求'}`,
+                );
+              }
+            }}
           >
-            3D
-          </button>
+            <button
+              type="button"
+              className={`tool-button${vol3dLayout.mode === 'on' ? ' tool-button--active' : ''}`}
+              disabled={!activeVol3dGate.allowed && vol3dLayout.mode !== 'on'}
+              title={
+                vol3dLayout.mode === 'on'
+                  ? '退出 3D 体绘制，返回 2D 布局'
+                  : (activeVol3dGate.message ?? '3D 体绘制（vtk.js 光线投射）')
+              }
+              onClick={beginVol3dEntry}
+            >
+              3D
+            </button>
+          </span>
           <button
             type="button"
             className={`tool-button${showInfo ? ' tool-button--active' : ''}`}
