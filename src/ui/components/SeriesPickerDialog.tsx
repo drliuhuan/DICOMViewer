@@ -7,6 +7,11 @@
  * - 补载期间展示进度与取消；失败给明确中文错误，可重试或返回。
  */
 import { useEffect, useState } from 'react';
+import {
+  IconCheck,
+  IconChevronLeft,
+  IconClose,
+} from '../icons';
 import type { SeriesCandidateRow } from '../../features/series/entryDecision';
 import { useT } from '../i18n/i18n';
 
@@ -97,7 +102,7 @@ export function SeriesPickerDialog({
             onClick={onCancel}
             disabled={isBusy}
           >
-            ×
+            <IconClose />
           </button>
         </div>
 
@@ -197,9 +202,7 @@ export function SeriesPickerDialog({
           <button
             type="button"
             className="tool-button tool-button--primary"
-            disabled={
-              isBusy || selectedUid === ''
-            }
+            disabled={isBusy || selectedUid === ''}
             title={t('entry.pick.confirmHint')}
             onClick={() => {
               if (selectedUid !== '') {
@@ -207,7 +210,8 @@ export function SeriesPickerDialog({
               }
             }}
           >
-            {t('entry.pick.confirm')}
+            <IconCheck />
+            <span className="tool-button-label">{t('entry.pick.confirm')}</span>
           </button>
           <button
             type="button"
@@ -215,7 +219,8 @@ export function SeriesPickerDialog({
             disabled={isBusy}
             onClick={onCancel}
           >
-            {t('entry.pick.back')}
+            <IconChevronLeft />
+            <span className="tool-button-label">{t('entry.pick.back')}</span>
           </button>
         </div>
       </div>

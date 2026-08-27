@@ -15,6 +15,7 @@ import type { SeriesStack } from '../../features/series/buildStacks';
 import type { PatientNode, StudyNode } from '../../features/series/seriesTree';
 import { SERIES_UID_MIME } from '../../features/viewer/seriesDragDrop';
 import { formatDicomDate } from './InfoOverlay';
+import { IconClose } from '../icons';
 
 interface SeriesPanelProps {
   patients: readonly PatientNode[];
@@ -139,7 +140,7 @@ function SeriesCard({
           title="关闭该序列并释放内存"
           onClick={handleClose}
         >
-          ×
+          <IconClose size={12} />
         </span>
       )}
     </button>

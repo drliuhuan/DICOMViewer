@@ -31,6 +31,11 @@ import {
 } from '@cornerstonejs/core';
 import type { Types } from '@cornerstonejs/core';
 import { InfoOverlay } from '../../ui/components/InfoOverlay';
+import {
+  IconCamera,
+  IconExit,
+  IconReset,
+} from '../../ui/icons';
 import type { SeriesStack } from '../series/buildStacks';
 import { checkVolume3dEligibility, hasWebGL2 } from './gate';
 import { VOLUME3D_VIEWPORT_ID } from './layout';
@@ -605,13 +610,21 @@ export function Volume3dViewport({
           />
         </label>
         <button type="button" className="tool-button" onClick={handleResetCamera} title="复位视角（轴位俯视）">
-          复位视角
+          <IconReset />
+          <span className="tool-button-label">复位视角</span>
         </button>
         <button type="button" className="tool-button" onClick={handleScreenshot} title="当前视角导出 PNG">
-          截图
+          <IconCamera />
+          <span className="tool-button-label">截图</span>
         </button>
-        <button type="button" className="tool-button" onClick={onExitVolume3d}>
-          退出 3D
+        <button
+          type="button"
+          className="tool-button"
+          aria-label="退出 3D 体绘制"
+          onClick={onExitVolume3d}
+        >
+          <IconExit />
+          <span className="tool-button-label">退出 3D</span>
         </button>
       </div>
 
@@ -645,8 +658,14 @@ export function Volume3dViewport({
         {status === 'error' && (
           <div role="alert" className="viewport-error">
             3D 不可用:{buildError}
-            <button type="button" className="tool-button" onClick={onExitVolume3d}>
-              返回 2D 阅片
+            <button
+              type="button"
+              className="tool-button"
+              aria-label="返回 2D 阅片"
+              onClick={onExitVolume3d}
+            >
+              <IconExit />
+              <span className="tool-button-label">返回 2D 阅片</span>
             </button>
           </div>
         )}

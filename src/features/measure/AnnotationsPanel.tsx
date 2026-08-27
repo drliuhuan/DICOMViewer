@@ -8,6 +8,16 @@
  */
 import { useRef } from 'react';
 import type { AnnotationRow } from './annotationModel';
+import {
+  IconClose,
+  IconEye,
+  IconEyeOff,
+  IconFileDown,
+  IconFileSr,
+  IconFileUp,
+  IconTarget,
+  IconTrash,
+} from '../../ui/icons';
 
 export interface AnnotationsPanelProps {
   open: boolean;
@@ -64,19 +74,27 @@ export function AnnotationsPanel({
           aria-label="关闭标注面板"
           onClick={onClose}
         >
-          ×
+          <IconClose />
         </button>
       </div>
 
       <div className="annotations-panel-actions">
-        <button type="button" className="tool-button" onClick={onShowAll}>
-          全部显示
+        <button type="button" className="tool-button" aria-label="全部显示" onClick={onShowAll}>
+          <IconEye />
+          <span className="tool-button-label">全部显示</span>
         </button>
-        <button type="button" className="tool-button" onClick={onHideAll}>
-          全部隐藏
+        <button type="button" className="tool-button" aria-label="全部隐藏" onClick={onHideAll}>
+          <IconEyeOff />
+          <span className="tool-button-label">全部隐藏</span>
         </button>
-        <button type="button" className="tool-button annotations-danger" onClick={onClear}>
-          清空标注
+        <button
+          type="button"
+          className="tool-button annotations-danger"
+          aria-label="清空标注"
+          onClick={onClear}
+        >
+          <IconTrash />
+          <span className="tool-button-label">清空标注</span>
         </button>
       </div>
 
@@ -105,7 +123,8 @@ export function AnnotationsPanel({
                   onToggleVisibility(row);
                 }}
               >
-                {row.isVisible ? '显' : '隐'}
+                {row.isVisible ? <IconEye size={13} /> : <IconEyeOff size={13} />}
+                <span className="tool-button-label">{row.isVisible ? '显' : '隐'}</span>
               </button>
               <div className="annotations-row-main">
                 <div className="annotations-row-title">
@@ -150,7 +169,8 @@ export function AnnotationsPanel({
                     onJump(row);
                   }}
                 >
-                  跳转
+                  <IconTarget size={13} />
+                  <span className="tool-button-label">跳转</span>
                 </button>
                 <button
                   type="button"
@@ -161,7 +181,8 @@ export function AnnotationsPanel({
                     onDelete(row);
                   }}
                 >
-                  删除
+                  <IconTrash size={13} />
+                  <span className="tool-button-label">删除</span>
                 </button>
               </div>
             </div>
@@ -170,15 +191,18 @@ export function AnnotationsPanel({
       </div>
 
       <div className="annotations-panel-footer">
-        <button type="button" className="tool-button" onClick={onExportJson}>
-          导出 JSON
+        <button type="button" className="tool-button" aria-label="导出标注 JSON" onClick={onExportJson}>
+          <IconFileDown />
+          <span className="tool-button-label">导出 JSON</span>
         </button>
         <button
           type="button"
           className="tool-button"
+          aria-label="导入标注 JSON"
           onClick={() => importRef.current?.click()}
         >
-          导入 JSON
+          <IconFileUp />
+          <span className="tool-button-label">导入 JSON</span>
         </button>
         <input
           ref={importRef}
@@ -201,7 +225,8 @@ export function AnnotationsPanel({
           title={canExportSr ? '导出为 DICOM SR' : '没有可导出的测量标注'}
           onClick={onExportSr}
         >
-          导出 SR
+          <IconFileSr />
+          <span className="tool-button-label">导出 SR</span>
         </button>
       </div>
     </div>

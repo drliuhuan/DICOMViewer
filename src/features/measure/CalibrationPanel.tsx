@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react';
 import type { CalibrationCandidate } from './calibration';
 import { formatCalibrationScale, parsePhysicalLengthMm } from './calibration';
 import { formatFixed2 } from './roiStats';
+import { IconCheck, IconClose } from '../../ui/icons';
 
 export interface CalibrationPanelProps {
   open: boolean;
@@ -59,7 +60,7 @@ export function CalibrationPanel({
         <div className="calibrate-panel-header">
           <span>手动校准（像素间距缺失）</span>
           <button type="button" className="tool-button" aria-label="关闭校准" onClick={onClose}>
-            ×
+            <IconClose />
           </button>
         </div>
 
@@ -114,8 +115,9 @@ export function CalibrationPanel({
               </p>
             )}
             <div className="calibrate-panel-actions">
-              <button type="button" className="tool-button" onClick={handleSubmit}>
-                应用校准
+              <button type="button" className="tool-button" aria-label="应用校准" onClick={handleSubmit}>
+                <IconCheck />
+                <span className="tool-button-label">应用校准</span>
               </button>
             </div>
           </>

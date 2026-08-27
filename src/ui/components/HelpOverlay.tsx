@@ -5,6 +5,7 @@
  */
 import { useEffect } from 'react';
 import { useT } from '../i18n/i18n';
+import { IconClose } from '../icons';
 
 export interface ShortcutRow {
   /** 按键（展示用） */
@@ -73,7 +74,7 @@ export function HelpOverlay({ open, onClose }: HelpOverlayProps) {
             aria-label={t('help.close')}
             onClick={onClose}
           >
-            ×
+            <IconClose />
           </button>
         </div>
         <table className="help-table">

@@ -6,6 +6,10 @@
  */
 import { useState } from 'react';
 import type { LoadFailure } from '../../features/loading/openDicomFiles';
+import {
+  IconChevronDown,
+  IconChevronUp,
+} from '../icons';
 
 interface ErrorReportPanelProps {
   failures: readonly LoadFailure[];
@@ -33,9 +37,13 @@ export function ErrorReportPanel({ failures }: ErrorReportPanelProps) {
         <button
           type="button"
           className="error-report-toggle"
+          aria-expanded={expanded}
           onClick={() => setExpanded((prev) => !prev)}
         >
-          {expanded ? '收起' : `查看详情（${failures.length}）`}
+          {expanded ? <IconChevronUp size={13} /> : <IconChevronDown size={13} />}
+          <span className="tool-button-label">
+            {expanded ? '收起' : `查看详情（${failures.length}）`}
+          </span>
         </button>
       </div>
       {expanded && (

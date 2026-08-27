@@ -27,6 +27,16 @@ import {
   type RetrieveStudyOptions,
 } from '../../features/pacs/dicomweb';
 import { toOpenedFiles } from '../../features/pacs/remoteInstances';
+import {
+  IconBolt,
+  IconClose,
+  IconCloudDown,
+  IconMagnifier,
+  IconMinus,
+  IconPlus,
+  IconSave,
+  IconStar,
+} from '../icons';
 import type { OpenedDicomFile } from '../../features/loading/openDicomFiles';
 
 interface PacsPanelProps {
@@ -277,7 +287,7 @@ export function PacsPanel({
       <div className="pacs-panel-header">
         <span>PACS 联网（DICOMweb）</span>
         <button type="button" className="tool-button" aria-label="关闭 PACS 面板" onClick={onClose}>
-          ×
+          <IconClose />
         </button>
       </div>
 
@@ -301,24 +311,29 @@ export function PacsPanel({
             </select>
           </label>
           <div className="pacs-row-actions">
-            <button type="button" className="tool-button" onClick={handleAdd}>
-              添加
+            <button type="button" className="tool-button" aria-label="添加服务器" onClick={handleAdd}>
+              <IconPlus />
+              <span className="tool-button-label">添加</span>
             </button>
             <button
               type="button"
               className="tool-button"
               disabled={selected === undefined}
+              aria-label="删除服务器"
               onClick={handleRemove}
             >
-              删除
+              <IconMinus />
+              <span className="tool-button-label">删除</span>
             </button>
             <button
               type="button"
               className="tool-button"
               disabled={selected === undefined || selected.isDefault}
+              aria-label="设为默认服务器"
               onClick={handleSetDefault}
             >
-              设为默认
+              <IconStar />
+              <span className="tool-button-label">设为默认</span>
             </button>
           </div>
         </div>
@@ -397,11 +412,24 @@ export function PacsPanel({
               />
             </label>
             <div className="pacs-row-actions">
-              <button type="button" className="tool-button" onClick={() => commitDraft()}>
-                保存配置
+              <button
+                type="button"
+                className="tool-button"
+                aria-label="保存配置"
+                onClick={() => commitDraft()}
+              >
+                <IconSave />
+                <span className="tool-button-label">保存配置</span>
               </button>
-              <button type="button" className="tool-button" disabled={busy} onClick={() => void runTest()}>
-                测试连接
+              <button
+                type="button"
+                className="tool-button"
+                disabled={busy}
+                aria-label="测试连接"
+                onClick={() => void runTest()}
+              >
+                <IconBolt />
+                <span className="tool-button-label">测试连接</span>
               </button>
             </div>
             {validationError !== null && (
@@ -494,8 +522,15 @@ export function PacsPanel({
             />
           </label>
           <div className="pacs-row-actions">
-            <button type="button" className="tool-button" disabled={busy} onClick={() => void runQuery()}>
-              查询
+            <button
+              type="button"
+              className="tool-button"
+              disabled={busy}
+              aria-label="查询检查"
+              onClick={() => void runQuery()}
+            >
+              <IconMagnifier />
+              <span className="tool-button-label">查询</span>
             </button>
           </div>
         </div>
@@ -529,17 +564,25 @@ export function PacsPanel({
                     </span>
                   )}
                   {isFetching ? (
-                    <button type="button" className="tool-button" onClick={handleCancelFetch}>
-                      取消
+                    <button
+                      type="button"
+                      className="tool-button"
+                      aria-label="取消拉取"
+                      onClick={handleCancelFetch}
+                    >
+                      <IconClose />
+                      <span className="tool-button-label">取消</span>
                     </button>
                   ) : (
                     <button
                       type="button"
                       className="tool-button"
                       disabled={busy}
+                      aria-label="拉取该检查全部实例"
                       onClick={() => void handleFetchStudy(study.studyUid)}
                     >
-                      拉取
+                      <IconCloudDown />
+                      <span className="tool-button-label">拉取</span>
                     </button>
                   )}
                 </div>

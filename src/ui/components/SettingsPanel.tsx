@@ -12,6 +12,7 @@ import {
 } from '../../features/settings/settings';
 import type { Lang } from '../i18n/i18n';
 import { useT } from '../i18n/i18n';
+import { IconClose, IconReset } from '../icons';
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -47,7 +48,7 @@ export function SettingsPanel({ settings, onChange, onClose }: SettingsPanelProp
           aria-label={t('settings.close')}
           onClick={onClose}
         >
-          ×
+          <IconClose />
         </button>
       </div>
 
@@ -118,13 +119,16 @@ export function SettingsPanel({ settings, onChange, onClose }: SettingsPanelProp
       <button
         type="button"
         className="tool-button settings-reset"
+        aria-label={t('settings.reset')}
+        title={t('settings.reset')}
         onClick={() => {
           setCacheDraft(String(DEFAULT_SETTINGS.maxImageCacheMb));
           setThumbDraft(String(DEFAULT_SETTINGS.thumbnailMaxCount));
           onChange({ ...DEFAULT_SETTINGS });
         }}
       >
-        {t('settings.reset')}
+        <IconReset />
+        <span className="tool-button-label">{t('settings.reset')}</span>
       </button>
     </div>
   );

@@ -30,6 +30,7 @@ import {
 } from '@cornerstonejs/core';
 import type { Types } from '@cornerstonejs/core';
 import { InfoOverlay } from '../../ui/components/InfoOverlay';
+import { IconExit } from '../../ui/icons';
 import type { SeriesStack } from '../series/buildStacks';
 import {
   checkMprEligibility,
@@ -470,8 +471,14 @@ export function MprViewport({
         {gate?.nonUniformSpacing === true && (
           <span className="mpr-note">层间距不一致，已按图像位置（IPP）重采样</span>
         )}
-        <button type="button" className="tool-button" onClick={onExitMpr}>
-          退出 MPR
+        <button
+          type="button"
+          className="tool-button"
+          aria-label="退出 MPR，返回 2D 布局"
+          onClick={onExitMpr}
+        >
+          <IconExit />
+          <span className="tool-button-label">退出 MPR</span>
         </button>
       </div>
 
@@ -533,8 +540,14 @@ export function MprViewport({
         {status === 'error' && (
           <div role="alert" className="viewport-error">
             MPR 不可用:{buildError}
-            <button type="button" className="tool-button" onClick={onExitMpr}>
-              返回 2D 阅片
+            <button
+              type="button"
+              className="tool-button"
+              aria-label="返回 2D 阅片"
+              onClick={onExitMpr}
+            >
+              <IconExit />
+              <span className="tool-button-label">返回 2D 阅片</span>
             </button>
           </div>
         )}

@@ -1628,3 +1628,37 @@ body {
 .entry-gate-wrap {
   display: inline-flex;
 }
+
+/* ── 图标按钮体系（M11 任务 4）────────────────── */
+.tool-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-button > svg {
+  flex: none;
+}
+
+.open-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.open-button > svg {
+  flex: none;
+}
+
+.error-report-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 窄屏/小屏（≤767px）：仅显示图标，文案由 title/aria-label 承担（FR 任务书） */
+@media (max-width: 767px) {
+  .tool-button-label {
+    display: none;
+  }
+}

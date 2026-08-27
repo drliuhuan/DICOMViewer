@@ -130,6 +130,47 @@ import {
   detectDeviceProfile,
 } from '../features/perf/deviceProfile';
 import { I18nContext, translate, type I18nContextValue } from '../ui/i18n/i18n';
+import {
+  IconAnnotation,
+  IconAngle,
+  IconCalibrate,
+  IconChevronLeft,
+  IconChevronRight,
+  IconWindowLevel,
+  IconCobb,
+  IconClose,
+    IconEllipseRoi,
+  IconFile,
+  IconFit,
+  IconFolderOpen,
+  IconHelp,
+  IconInfo,
+  IconInvert,
+  IconLayout1,
+  IconLayout2,
+  IconLayout4,
+  IconMenu,
+  IconMpr,
+  IconOneToOne,
+  IconPacs,
+  IconPan,
+  IconPause,
+  IconPlay,
+  IconRectRoi,
+  IconRotateCcw,
+  IconRotateCw,
+  IconReset,
+  IconRuler,
+  IconSettings,
+  IconSliders,
+  IconStackScroll,
+  IconStop,
+  IconTrash,
+  IconVolume3d,
+  IconZoom,
+  IconZoomIn,
+  IconZoomOut,
+} from '../ui/icons';
 import { AnnotationsPanel } from '../features/measure/AnnotationsPanel';
 import { CalibrationPanel } from '../features/measure/CalibrationPanel';
 import {
@@ -188,6 +229,13 @@ const LAYOUT_BY_CELLS: Readonly<Record<number, LayoutKey>> = {
   4: '2x2',
 };
 const ALL_VIEWPORT_IDS = ['vp-0', 'vp-1', 'vp-2', 'vp-3'] as const;
+
+/** 布局按钮图标（M11 任务 4） */
+const LAYOUT_ICONS: Readonly<Record<LayoutKey, JSX.Element>> = {
+  '1x1': <IconLayout1 />,
+  '1x2': <IconLayout2 />,
+  '2x2': <IconLayout4 />,
+};
 
 /** 空视口共享的稳定空数组：保证 items/imageIds 引用稳定，避免 effect 反复重跑 */
 const EMPTY_ITEMS: StackItem[] = [];
@@ -1836,9 +1884,12 @@ export default function App() {
           <button
             type="button"
             className="open-button"
+            title={t('app.openFile')}
+            aria-label={t('app.openFile')}
             onClick={() => fileInputRef.current?.click()}
           >
-            {t('app.openFile')}
+            <IconFile />
+            <span className="tool-button-label">{t('app.openFile')}</span>
           </button>
           <button
             type="button"
@@ -1853,7 +1904,8 @@ export default function App() {
             }
             onClick={() => void openFolder()}
           >
-            {t('app.openFolder')}
+            <IconFolderOpen />
+            <span className="tool-button-label">{t('app.openFolder')}</span>
           </button>
           {isMobile && patientTree.length > 0 && (
             <button
@@ -1866,7 +1918,8 @@ export default function App() {
               aria-expanded={seriesDrawerOpen}
               onClick={() => setSeriesDrawerOpen((prev) => !prev)}
             >
-              ☰ 序列
+              <IconMenu />
+              <span className="tool-button-label">☰ 序列</span>
             </button>
           )}
           <input
@@ -1906,7 +1959,8 @@ export default function App() {
                 }）`}
                 onClick={() => switchLayout(LAYOUT_CONFIG[key].cells)}
               >
-                {key.replace('x', '×')}
+                {LAYOUT_ICONS[key]}
+                <span className="tool-button-label">{key.replace('x', '×')}</span>
               </button>
             ))}
           </div>
@@ -1918,7 +1972,8 @@ export default function App() {
               title="窗宽窗位（左键拖动，快捷键 W）"
               onClick={() => activateTool(ToolNames.windowLevel)}
             >
-              窗宽窗位
+              <IconWindowLevel />
+              <span className="tool-button-label">窗宽窗位</span>
             </button>
             <button
               type="button"
@@ -1926,7 +1981,8 @@ export default function App() {
               title="缩放（拖动 / Ctrl+滚轮，快捷键 Z）"
               onClick={() => activateTool(ToolNames.zoom)}
             >
-              缩放
+              <IconZoom />
+              <span className="tool-button-label">缩放</span>
             </button>
             <button
               type="button"
@@ -1934,7 +1990,8 @@ export default function App() {
               title="平移（中键拖动，快捷键 P）"
               onClick={() => activateTool(ToolNames.pan)}
             >
-              平移
+              <IconPan />
+              <span className="tool-button-label">平移</span>
             </button>
             <button
               type="button"
@@ -1942,7 +1999,8 @@ export default function App() {
               title="层滚动（激活后拖动翻层；滚轮默认翻页）"
               onClick={() => activateTool(ToolNames.stackScroll)}
             >
-              层滚动
+              <IconStackScroll />
+              <span className="tool-button-label">层滚动</span>
             </button>
           </div>
 
@@ -1953,7 +2011,8 @@ export default function App() {
               title="长度测量（两点连线显示物理 mm，可拖动微调；快捷键 L）"
               onClick={() => activateTool(ToolNames.length)}
             >
-              长度
+              <IconRuler />
+              <span className="tool-button-label">长度</span>
             </button>
             <button
               type="button"
@@ -1961,7 +2020,8 @@ export default function App() {
               title="角度测量（三点两线段夹角 + 两线段长度；快捷键 A）"
               onClick={() => activateTool(ToolNames.angle)}
             >
-              角度
+              <IconAngle />
+              <span className="tool-button-label">角度</span>
             </button>
             <button
               type="button"
@@ -1969,7 +2029,8 @@ export default function App() {
               title="矩形 ROI（均值/标准差/极值/面积 mm²/像素数；快捷键 R）"
               onClick={() => activateTool(ToolNames.rectangleRoi)}
             >
-              矩形
+              <IconRectRoi />
+              <span className="tool-button-label">矩形</span>
             </button>
             <button
               type="button"
@@ -1977,7 +2038,8 @@ export default function App() {
               title="椭圆 ROI（统计项同矩形；快捷键 O）"
               onClick={() => activateTool(ToolNames.ellipticalRoi)}
             >
-              椭圆
+              <IconEllipseRoi />
+              <span className="tool-button-label">椭圆</span>
             </button>
             <button
               type="button"
@@ -1985,7 +2047,8 @@ export default function App() {
               title="Cobb 角测量：依次画两条线段，显示夹角与两线长度（钝角显示补角；快捷键 K）"
               onClick={() => activateTool(ToolNames.cobbAngle)}
             >
-              Cobb
+              <IconCobb />
+              <span className="tool-button-label">Cobb</span>
             </button>
             {hasStack && activeSeriesNeedsCalibration && (
               <button
@@ -1994,7 +2057,8 @@ export default function App() {
                 title="像素间距缺失或为 0，无法计算物理尺寸：画长度线后手动校准"
                 onClick={() => setShowCalibration(true)}
               >
-                校准
+                <IconCalibrate />
+                <span className="tool-button-label">校准</span>
               </button>
             )}
           </div>
@@ -2055,7 +2119,8 @@ export default function App() {
                 title="恢复默认窗宽窗位"
                 onClick={() => activeApi?.resetWindowLevel()}
               >
-                重置窗宽窗位
+                <IconSliders />
+                <span className="tool-button-label">重置窗宽窗位</span>
               </button>
             </div>
           )}
@@ -2068,7 +2133,8 @@ export default function App() {
                 title="放大（+）"
                 onClick={() => activeApi?.zoomStep(1.25)}
               >
-                ＋
+                <IconZoomIn />
+                <span className="tool-button-label">放大</span>
               </button>
               <button
                 type="button"
@@ -2076,7 +2142,8 @@ export default function App() {
                 title="缩小（−）"
                 onClick={() => activeApi?.zoomStep(0.8)}
               >
-                －
+                <IconZoomOut />
+                <span className="tool-button-label">缩小</span>
               </button>
               <button
                 type="button"
@@ -2084,7 +2151,8 @@ export default function App() {
                 title="1:1 原始像素显示"
                 onClick={() => activeApi?.oneToOne()}
               >
-                1:1
+                <IconOneToOne />
+                <span className="tool-button-label">1:1</span>
               </button>
               <button
                 type="button"
@@ -2092,7 +2160,8 @@ export default function App() {
                 title="适应窗口（F / 双击视口）"
                 onClick={() => activeApi?.fitToWindow()}
               >
-                适应窗口
+                <IconFit />
+                <span className="tool-button-label">适应窗口</span>
               </button>
               <button
                 type="button"
@@ -2100,7 +2169,8 @@ export default function App() {
                 title="重置视图：窗宽窗位+缩放+平移+反色+旋转（Shift+R）"
                 onClick={() => activeApi?.resetView()}
               >
-                重置视图
+                <IconReset />
+                <span className="tool-button-label">重置视图</span>
               </button>
               <button
                 type="button"
@@ -2108,7 +2178,8 @@ export default function App() {
                 title="反色显示（Shift+I，各视口独立）"
                 onClick={() => activeApi?.toggleInvert()}
               >
-                反色
+                <IconInvert />
+                <span className="tool-button-label">反色</span>
               </button>
               <button
                 type="button"
@@ -2116,7 +2187,8 @@ export default function App() {
                 title="逆时针旋转 90°（[）"
                 onClick={() => activeApi?.rotateStep(90)}
               >
-                ⟲ 逆时针
+                <IconRotateCcw />
+                <span className="tool-button-label">逆时针</span>
               </button>
               <button
                 type="button"
@@ -2124,7 +2196,8 @@ export default function App() {
                 title="顺时针旋转 90°（]）"
                 onClick={() => activeApi?.rotateStep(-90)}
               >
-                ⟳ 顺时针
+                <IconRotateCw />
+                <span className="tool-button-label">顺时针</span>
               </button>
             </div>
           )}
@@ -2137,8 +2210,9 @@ export default function App() {
                 disabled={activeUi.sliceIndex <= 0}
                 onClick={() => activeApi?.scrollSlice(-1)}
                 title="上一帧（PageUp / ←）"
+                aria-label="上一帧"
               >
-                ◀
+                <IconChevronLeft />
               </button>
               <span className="slice-counter">
                 第 {activeUi.sliceIndex + 1} / {activeUi.sliceCount} 层
@@ -2149,8 +2223,9 @@ export default function App() {
                 disabled={activeUi.sliceIndex >= activeUi.sliceCount - 1}
                 onClick={() => activeApi?.scrollSlice(1)}
                 title="下一帧（PageDown / →）"
+                aria-label="下一帧"
               >
-                ▶
+                <IconChevronRight />
               </button>
             </div>
           )}
@@ -2163,7 +2238,10 @@ export default function App() {
                 title="播放/暂停（空格键）"
                 onClick={() => toggleCine(activeViewportId)}
               >
-                {activeCine.playing ? '暂停' : '播放'}
+                {activeCine.playing ? <IconPause /> : <IconPlay />}
+                <span className="tool-button-label">
+                  {activeCine.playing ? '暂停' : '播放'}
+                </span>
               </button>
               <button
                 type="button"
@@ -2171,7 +2249,8 @@ export default function App() {
                 title="停止并返回首帧"
                 onClick={() => stopCine(activeViewportId)}
               >
-                停止
+                <IconStop />
+                <span className="tool-button-label">停止</span>
               </button>
               <label className="cine-field">
                 速度
@@ -2221,7 +2300,8 @@ export default function App() {
               }
               onClick={beginMprEntry}
             >
-              MPR
+              <IconMpr />
+              <span className="tool-button-label">MPR</span>
             </button>
           </span>
           <span
@@ -2245,7 +2325,8 @@ export default function App() {
               }
               onClick={beginVol3dEntry}
             >
-              3D
+              <IconVolume3d />
+              <span className="tool-button-label">3D</span>
             </button>
           </span>
           <button
@@ -2254,7 +2335,8 @@ export default function App() {
             title="信息覆盖文字开关（I）"
             onClick={() => setShowInfo((prev) => !prev)}
           >
-            {t('app.info')}
+            <IconInfo />
+            <span className="tool-button-label">{t('app.info')}</span>
           </button>
           <button
             type="button"
@@ -2264,7 +2346,8 @@ export default function App() {
             aria-expanded={showAnnotationsPanel}
             onClick={() => setShowAnnotationsPanel((prev) => !prev)}
           >
-            标注
+            <IconAnnotation />
+            <span className="tool-button-label">标注</span>
           </button>
           <button
             type="button"
@@ -2274,7 +2357,8 @@ export default function App() {
             aria-expanded={showHelp}
             onClick={() => setShowHelp(true)}
           >
-            {t('app.help')}
+            <IconHelp />
+            <span className="tool-button-label">{t('app.help')}</span>
           </button>
           <button
             type="button"
@@ -2284,7 +2368,8 @@ export default function App() {
             aria-expanded={showSettings}
             onClick={() => setShowSettings((prev) => !prev)}
           >
-            {t('app.settings')}
+            <IconSettings />
+            <span className="tool-button-label">{t('app.settings')}</span>
           </button>
           <button
             type="button"
@@ -2294,15 +2379,21 @@ export default function App() {
             aria-expanded={showPacs}
             onClick={() => setShowPacs((prev) => !prev)}
           >
-            PACS
+            <IconPacs />
+            <span className="tool-button-label">PACS</span>
           </button>
         </header>
 
         {loadState.status === 'error' && (
           <div role="alert" className="error-banner">
             <span>无法打开文件：{loadState.message}</span>
-            <button type="button" onClick={() => setLoadState({ status: 'idle' })}>
-              关闭
+            <button
+              type="button"
+              aria-label="关闭错误提示"
+              onClick={() => setLoadState({ status: 'idle' })}
+            >
+              <IconClose />
+              <span className="tool-button-label">关闭</span>
             </button>
           </div>
         )}
@@ -2326,8 +2417,14 @@ export default function App() {
                 onCloseSeries={closeSeries}
                 thumbnails={thumbnails}
               />
-              <button type="button" className="tool-button clear-all-button" onClick={clearAll}>
-                清空全部
+              <button
+                type="button"
+                className="tool-button clear-all-button"
+                aria-label="清空全部已加载数据"
+                onClick={clearAll}
+              >
+                <IconTrash />
+                <span className="tool-button-label">清空全部</span>
               </button>
             </aside>
           )}
@@ -2417,8 +2514,14 @@ export default function App() {
                       }}
                     />
                   </div>
-                  <button type="button" className="tool-button" onClick={cancelLoading}>
-                    取消
+                  <button
+                    type="button"
+                    className="tool-button"
+                    aria-label="取消解析"
+                    onClick={cancelLoading}
+                  >
+                    <IconClose />
+                    <span className="tool-button-label">取消</span>
                   </button>
                 </div>
               ) : (
@@ -2455,7 +2558,7 @@ export default function App() {
                   aria-label="关闭序列列表"
                   onClick={() => setSeriesDrawerOpen(false)}
                 >
-                  ×
+                  <IconClose />
                 </button>
               </div>
               <SeriesPanel
@@ -2468,8 +2571,14 @@ export default function App() {
                 onCloseSeries={closeSeries}
                 thumbnails={thumbnails}
               />
-              <button type="button" className="tool-button clear-all-button" onClick={clearAll}>
-                清空全部
+              <button
+                type="button"
+                className="tool-button clear-all-button"
+                aria-label="清空全部已加载数据"
+                onClick={clearAll}
+              >
+                <IconTrash />
+                <span className="tool-button-label">清空全部</span>
               </button>
             </aside>
           </>
