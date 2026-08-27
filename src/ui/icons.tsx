@@ -6,8 +6,8 @@
  *   stroke=currentColor 的轻量路径；
  * - 图标默认 16px，可用 size 覆盖；aria-hidden（语义由按钮的
  *   title/aria-label 承担）；
- * - 配合 CSS：`.tool-button` 变为 inline-flex 图标+文字；窄屏
- *   （≤767px）隐藏 `.tool-button-label` 仅显示图标。
+ * - 配合 CSS：`.tool-button` 变为 inline-flex 图标按钮；所有尺寸均隐藏
+ *   `.tool-button-label` 仅显示图标（M11-F1），文案由 title/aria-label 承担。
  */
 import type { ReactNode } from 'react';
 

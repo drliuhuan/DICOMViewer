@@ -42,6 +42,8 @@ body {
 /* ── 工具栏 ─────────────────────────────── */
 .toolbar {
   display: flex;
+  /* 图标按钮化后仍可能分组较多：任意宽度允许换行，避免水平溢出（M11-F1） */
+  flex-wrap: wrap;
   align-items: center;
   gap: 16px;
   /* 安全区：刘海/圆角设备（viewport-fit=cover 已在 index.html；桌面 env=0） */
@@ -1151,10 +1153,9 @@ body {
   font-size: 13px;
 }
 
-/* 窄屏（手机 ≤767px）：工具栏允许换行、抽屉按钮触控目标加大 */
+/* 窄屏（手机 ≤767px）：抽屉按钮触控目标加大（换行已在 .toolbar 全局生效） */
 @media (max-width: 767px) {
   .toolbar {
-    flex-wrap: wrap;
     gap: 8px;
   }
 
@@ -1656,9 +1657,8 @@ body {
   gap: 4px;
 }
 
-/* 窄屏/小屏（≤767px）：仅显示图标，文案由 title/aria-label 承担（FR 任务书） */
-@media (max-width: 767px) {
-  .tool-button-label {
-    display: none;
-  }
+/* 所有尺寸一律仅显示图标：文案由 title/aria-label 承担，span 保留在 DOM
+   （M11-F1 真机反馈：桌面 icon+文字双显时功能区显示不下） */
+.tool-button-label {
+  display: none;
 }
