@@ -1,10 +1,10 @@
 services:
   dicom-viewer:
-    image: nginx:alpine
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: dicom-viewer:latest
     container_name: dicom-viewer
     restart: unless-stopped
     ports:
       - "192.168.0.66:4181:80"
-    volumes:
-      - ../dist:/usr/share/nginx/html:ro
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
