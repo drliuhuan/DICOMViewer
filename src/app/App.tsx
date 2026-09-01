@@ -1891,7 +1891,7 @@ export default function App() {
     <I18nContext.Provider value={i18n}>
       <div className={`app${dragActive ? ' app--drag-active' : ''}`}>
         <header className="toolbar">
-          <span className="brand">DICOM 查看器 · M2</span>
+          <span className="brand">DICOM 查看器</span>
           <button
             type="button"
             className="open-button"
