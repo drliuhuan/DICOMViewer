@@ -63,7 +63,12 @@ export interface DicomInstanceSummary {
   /** 图像位置（0020,0032），FR-2.3 第三级排序键（切片法向量投影） */
   imagePositionPatient: [number, number, number] | undefined;
   imageOrientationPatient: [number, number, number, number, number, number] | undefined;
-  /** 帧参照 UID（0020,0010）：跨序列空间对齐/融合的前提判断（FR-9.2/9.4） */
+  /**
+   * 帧参照 UID（FrameOfReferenceUID，0020,0052）：跨序列空间对齐/融合的前提。
+   * 旧实现误读 (0020,0010) StudyID；真实 PACS 中 StudyID 常缺失或各序列不一致，
+   * 会导致同 Study 的序列被误判为不同参照系。优先读 (0020,0052)，缺失时回退
+   * (0020,0010) 以兼容历史数据。
+   */
   frameOfReferenceUid?: string | undefined;
   /**
    * 增强型多帧（Enhanced CT/MR）Per-frame Functional Groups Sequence
@@ -248,7 +253,10 @@ export function extractInstanceSummary(
             iop[5] ?? 0,
           ]
         : undefined,
-    frameOfReferenceUid: safeString(dataSet, 'x00200010'),
+    // FrameOfReferenceUID（0020,0052）优先；旧数据/非标准文件缺失时回退
+    // StudyID（0020,0010），保持 M12 之前的行为兼容。
+    frameOfReferenceUid:
+      safeString(dataSet, 'x00200052') ?? safeString(dataSet, 'x00200010'),
     perFrameImagePositions:
       numberOfFrames > 1 ? extractPerFrameImagePositions(dataSet) : undefined,
     windowWidth: safeNumber(dataSet, 'x00281051'),
