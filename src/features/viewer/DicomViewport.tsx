@@ -37,6 +37,13 @@ import { InfoOverlay } from '../../ui/components/InfoOverlay';
 
 const RENDERING_ENGINE_ID = 'dicom-viewer-m1-engine';
 
+/**
+ * Cornerstone「图像数据已切换」事件名（FR-3.15）。
+ * 运行时由 cornerstone 提供；部分测试 mock 未声明该事件，缺失时跳过订阅，
+ * 仍由 stackEpoch 等既有信号兜底。
+ */
+const STACK_NEW_IMAGE_EVENT = Enums.Events?.STACK_NEW_IMAGE;
+
 /** 缩放下限（parallelScale 最小值，世界 mm），防止过度放大后除零/翻转 */
 const MIN_PARALLEL_SCALE = 1e-3;
 
@@ -57,6 +64,13 @@ export interface ViewportUiState {
    * 供 App 在「替换序列但层号/层数不变」时也重新计算跨视口定位线。
    */
   stackEpoch: number;
+  /**
+   * 已渲染图像纪元（FR-3.15）：STACK_NEW_IMAGE（新图像数据已就绪）后递增。
+   * 滑块/滚轮/ Cine 会先更新目标层号，异步解码完成前 getSliceGeometry 仍
+   * 返回上一张图像的几何；App 以本字段作为「几何已到位」的重算触发键，
+   * 避免用旧几何计算定位线，也避免逐帧/轮询重算。
+   */
+  renderedImageEpoch: number;
 }
 
 /** 切回 2D 后显示的 MPR 十字交点（FR-6.10） */
@@ -202,9 +216,12 @@ export function DicomViewport({
     invert: false,
     rotation: 0,
     stackEpoch: 0,
+    renderedImageEpoch: 0,
   });
   // 堆栈加载纪元（每次 setStack 成功递增；供跨视口定位线重算）
   const stackEpochRef = useRef(0);
+  // 已渲染图像纪元（每次 STACK_NEW_IMAGE 递增；表示当前几何已真正切换）
+  const renderedImageEpochRef = useRef(0);
   // 旋转值镜像（rotateStep/resetView 内读取当前值；cornerstone getRotation 兜底）
   const rotationRef = useRef(0);
 
@@ -428,7 +445,8 @@ export function DicomViewport({
         prev.zoom === next.zoom &&
         prev.invert === next.invert &&
         prev.rotation === next.rotation &&
-        prev.stackEpoch === next.stackEpoch
+        prev.stackEpoch === next.stackEpoch &&
+        prev.renderedImageEpoch === next.renderedImageEpoch
         ? prev
         : next;
     });
@@ -790,6 +808,18 @@ export function DicomViewport({
       const detail = (event as CustomEvent<Types.EventTypes.StackViewportScrollEventDetail>).detail;
       publishUi({ sliceIndex: detail.newImageIdIndex });
     };
+    // 图像数据真正切换后才递增纪元：滑块/滚轮可能先更新层号，解码完成前
+    // 几何仍属上一张图像；App 依赖该纪元在切换后补一次几何重算（FR-3.15）。
+    const onStackNewImage = (event: Event) => {
+      const detail = (event as CustomEvent<{ imageIdIndex?: number }>).detail;
+      renderedImageEpochRef.current += 1;
+      publishUi({
+        renderedImageEpoch: renderedImageEpochRef.current,
+        ...(typeof detail?.imageIdIndex === 'number'
+          ? { sliceIndex: detail.imageIdIndex }
+          : {}),
+      });
+    };
     const onVoiModified = (event: Event) => {
       const detail = (event as CustomEvent<Types.EventTypes.VoiModifiedEventDetail>).detail;
       if (detail.viewportId !== viewportId) {
@@ -830,6 +860,9 @@ export function DicomViewport({
     element.addEventListener(Enums.Events.VOI_MODIFIED, onVoiModified);
     element.addEventListener(Enums.Events.CAMERA_MODIFIED, onCameraModified);
     element.addEventListener('dblclick', onDoubleClick);
+    if (STACK_NEW_IMAGE_EVENT) {
+      element.addEventListener(STACK_NEW_IMAGE_EVENT, onStackNewImage);
+    }
     if (TOUCH_TAP_EVENT) {
       element.addEventListener(TOUCH_TAP_EVENT, onTouchTap);
     }
@@ -838,6 +871,9 @@ export function DicomViewport({
       element.removeEventListener(Enums.Events.VOI_MODIFIED, onVoiModified);
       element.removeEventListener(Enums.Events.CAMERA_MODIFIED, onCameraModified);
       element.removeEventListener('dblclick', onDoubleClick);
+      if (STACK_NEW_IMAGE_EVENT) {
+        element.removeEventListener(STACK_NEW_IMAGE_EVENT, onStackNewImage);
+      }
       if (TOUCH_TAP_EVENT) {
         element.removeEventListener(TOUCH_TAP_EVENT, onTouchTap);
       }

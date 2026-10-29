@@ -23,6 +23,7 @@ vi.mock('@cornerstonejs/core', () => ({
     ViewportType: { STACK: 'stack' },
     Events: {
       STACK_VIEWPORT_SCROLL: 'cornerstonestackviewportscroll',
+      STACK_NEW_IMAGE: 'cornerstonestacknewimage',
       VOI_MODIFIED: 'cornerstonevoimodified',
       CAMERA_MODIFIED: 'cornerstonecameramodified',
     },
@@ -147,7 +148,7 @@ function makeOpenedFile(
 const AXIAL_UID = '1.2.series-axial';
 const SAGITTAL_UID = '1.2.series-sagittal';
 
-function makeViewportStub() {
+function makeViewportStub(element?: HTMLElement) {
   let actors: Array<{ uid: string }> = [];
   let imageIds: string[] = [];
   let index = 0;
@@ -187,6 +188,12 @@ function makeViewportStub() {
     resetCamera: vi.fn(),
     setImageIdIndex: vi.fn((next: number) => {
       index = next;
+      // 真实 StackViewport 在图像数据切换后触发 STACK_NEW_IMAGE；
+      // 这里是 FR-3.15「几何已到位」的重算触发信号。
+      element?.dispatchEvent(
+        new CustomEvent('cornerstonestacknewimage', { detail: { imageIdIndex: next } }),
+      );
+      return Promise.resolve();
     }),
     getRotation: vi.fn(() => 0),
     setRotation: vi.fn(),
@@ -202,12 +209,45 @@ function makeEngineStub() {
   return {
     viewports,
     engine: {
-      enableElement: vi.fn((options: { viewportId: string }) => {
-        viewports.set(options.viewportId, makeViewportStub());
+      enableElement: vi.fn((options: { viewportId: string; element?: HTMLElement }) => {
+        viewports.set(options.viewportId, makeViewportStub(options.element));
       }),
       disableElement: vi.fn(),
       getViewport: vi.fn((id: string) => viewports.get(id) ?? null),
       resize: vi.fn(),
+    },
+  };
+}
+
+/**
+ * 模拟「层号先变、几何后到」：setImageIdIndex 只更新目标层号（getCurrentImageId
+ * 立即反映目标），图像几何（getImageData）仍停留在已渲染的旧层，直到测试调用
+ * complete() 才真正切换并触发 STACK_NEW_IMAGE。
+ */
+function deferImageSwitch(viewport: ReturnType<typeof makeViewportStub>) {
+  const baseSet = viewport.setImageIdIndex.getMockImplementation()!;
+  const baseGetIndex = viewport.getCurrentImageIdIndex.getMockImplementation()!;
+  const baseGetImageId = viewport.getCurrentImageId.getMockImplementation()!;
+  let pending: number | null = null;
+  viewport.setImageIdIndex.mockImplementation((next: number) => {
+    pending = next;
+    return Promise.resolve();
+  });
+  viewport.getCurrentImageIdIndex.mockImplementation(() => pending ?? baseGetIndex());
+  viewport.getCurrentImageId.mockImplementation(() => {
+    if (pending === null) {
+      return baseGetImageId();
+    }
+    return `dcm-file://axial-${pending + 1}`;
+  });
+  return {
+    pending: () => pending,
+    complete() {
+      const next = pending;
+      pending = null;
+      if (next !== null) {
+        baseSet(next);
+      }
     },
   };
 }
@@ -598,5 +638,61 @@ describe('App 集成：跨视口定位线（FR-3.15）', () => {
     clickButton(view.container, '1×1');
     await flush();
     expect(view.container.querySelectorAll('.cross-reference-lines').length).toBe(0);
+  });
+
+  it('滑块：层号先变、几何后到 → 图像切换后补算一次，且不会无限重算', async () => {
+    const { view, viewports } = await renderLoaded();
+    clickButton(view.container, '1×2');
+    await flush();
+
+    // vp-1 加载矢状位，随后激活轴位 vp-0（矢状位出现随 z 移动的定位线）
+    fireEvent.mouseDown(cells(view.container)[1]!);
+    fireEvent.click(seriesCard(view.container, 'SAGITTAL'));
+    await flush();
+    fireEvent.mouseDown(cells(view.container)[0]!);
+    await flush();
+
+    const sagCell = cells(view.container)[1]!;
+    expect(lineLefts(sagCell)[0]).toBeCloseTo(50, 3); // 第 1 层 z=0
+
+    const axial = viewports.get('vp-0')!;
+    const deferred = deferImageSwitch(axial);
+    const slider = cells(view.container)[0]!.querySelector<HTMLInputElement>('input[type=range]')!;
+    const readsBefore = axial.getImageData.mock.calls.length;
+
+    // 拖到第 3 层：目标层号立即变化，但图像几何仍停留在旧层。
+    fireEvent.change(slider, { target: { value: '2' } });
+    await flush();
+    expect(deferred.pending()).toBe(2);
+    // 线保持与「当前显示图像」一致；不得用上一张图像的几何提前重算。
+    expect(lineLefts(sagCell)[0]).toBeCloseTo(50, 3);
+    expect(axial.getImageData.mock.calls.length).toBe(readsBefore);
+
+    // 图像真正切换（STACK_NEW_IMAGE）→ 几何到位后补算一次，线跳到 z=4（left=90）。
+    await act(async () => {
+      deferred.complete();
+    });
+    await flush();
+    expect(lineLefts(sagCell)[0]).toBeCloseTo(90, 3);
+    const readsAfterForward = axial.getImageData.mock.calls.length;
+    expect(readsAfterForward - readsBefore).toBe(1);
+
+    // 反向拖回第 1 层：同样等几何到位后再更新，像素位置与滚轮语义一致。
+    fireEvent.change(slider, { target: { value: '0' } });
+    await flush();
+    expect(deferred.pending()).toBe(0);
+    expect(lineLefts(sagCell)[0]).toBeCloseTo(90, 3);
+    await act(async () => {
+      deferred.complete();
+    });
+    await flush();
+    expect(lineLefts(sagCell)[0]).toBeCloseTo(50, 3);
+    const readsAfterReverse = axial.getImageData.mock.calls.length;
+    expect(readsAfterReverse - readsAfterForward).toBe(1);
+
+    // 重算次数有界：继续推进事件循环不再触发几何读取，也不会残留多条线。
+    await flush(20);
+    expect(axial.getImageData.mock.calls.length).toBe(readsAfterReverse);
+    expect(sagCell.querySelectorAll('.reference-line').length).toBe(1);
   });
 });

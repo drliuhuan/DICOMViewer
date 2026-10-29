@@ -252,6 +252,7 @@ const EMPTY_UI: ViewportUiState = {
   invert: false,
   rotation: 0,
   stackEpoch: 0,
+  renderedImageEpoch: 0,
 };
 
 /** 视口 Cine 会话默认参数（FR-3.8） */
@@ -836,15 +837,17 @@ export default function App() {
       : null;
 
   /**
-   * 几何重算触发键：仅层号/层数变化（相机变化由 DicomViewport 只重投影，
-   * 不触发 App 重算，避免逐帧几何开销，NFR-2）。
+   * 几何重算触发键：实际已渲染图像纪元 + 堆栈纪元 + 层数。
+   *
+   * 不能仅依赖 sliceIndex：滑块/滚轮会先更新目标层号，而图像解码是异步的，
+   * 此时 getSliceGeometry() 仍返回上一张图像的几何（FR-3.15 回归）。
+   * 视口在 STACK_NEW_IMAGE（图像数据已切换）后递增 renderedImageEpoch，
+   * 保证几何真正到位后补一次重算；不含相机状态，相机变化只由视口重投影，
+   * 避免逐帧几何计算（NFR-2）。
    */
   const crossReferenceRevision = ALL_VIEWPORT_IDS.map((id) => {
     const ui = uiMap[id];
-    const stack = stackByUid.get(assignments[id] ?? '');
-    const imageId = stack?.items[ui?.sliceIndex ?? 0]?.imageId ?? '';
-    // imageId 纳入键：替换序列但层号/层数相同时也必须重算
-    return `${ui?.sliceIndex ?? -1}:${ui?.sliceCount ?? 0}:${ui?.stackEpoch ?? 0}:${imageId}`;
+    return `${ui?.sliceCount ?? 0}:${ui?.stackEpoch ?? 0}:${ui?.renderedImageEpoch ?? 0}`;
   }).join('|');
 
   /**
