@@ -81,6 +81,7 @@ import {
   type SeriesPickerBusy,
 } from '../ui/components/SeriesPickerDialog';
 import { readMprReferenceCenter } from '../features/mpr/referenceLines';
+import { computeCrossReferenceSegment } from '../features/viewer/crossReferenceLines';
 import {
   CINE_DEFAULT_FPS,
   CINE_FPS_MAX,
@@ -250,6 +251,7 @@ const EMPTY_UI: ViewportUiState = {
   zoom: 1,
   invert: false,
   rotation: 0,
+  stackEpoch: 0,
 };
 
 /** 视口 Cine 会话默认参数（FR-3.8） */
@@ -472,6 +474,9 @@ export default function App() {
   const hasStack = activeUi.sliceCount > 0;
   /** 当前激活视口的 Cine 会话 UI（FR-3.8） */
   const activeCine = cineUi[activeViewportId] ?? CINE_DEFAULTS;
+
+  /** 跨视口切面定位线开关默认开启；旧存储缺字段时按 true 处理（FR-3.15） */
+  const crossReferenceEnabled = settings.showCrossReferenceLines !== false;
 
   // ── 标注数据（FR-5.9/5.10/5.11）────────────────────────
   /** cornerstone 标注状态操作（每次调用读运行时，兼容异步加载；缺 mocks 时 no-op） */
@@ -829,6 +834,58 @@ export default function App() {
     activeViewportId !== null
       ? (stackByUid.get(assignments[activeViewportId] ?? '') ?? null)
       : null;
+
+  /**
+   * 几何重算触发键：仅层号/层数变化（相机变化由 DicomViewport 只重投影，
+   * 不触发 App 重算，避免逐帧几何开销，NFR-2）。
+   */
+  const crossReferenceRevision = ALL_VIEWPORT_IDS.map((id) => {
+    const ui = uiMap[id];
+    const stack = stackByUid.get(assignments[id] ?? '');
+    const imageId = stack?.items[ui?.sliceIndex ?? 0]?.imageId ?? '';
+    // imageId 纳入键：替换序列但层号/层数相同时也必须重算
+    return `${ui?.sliceIndex ?? -1}:${ui?.sliceCount ?? 0}:${ui?.stackEpoch ?? 0}:${imageId}`;
+  }).join('|');
+
+  /**
+   * 激活视口 → 每个非激活可见 2D 视口：计算激活切片平面与目标视口平面的
+   * 交线（目标像素坐标）并下发。1×1、MPR、3D、空视口、关闭开关时一律清空。
+   * 线由目标视口自行投影绘制；本 effect 不写视口 UI 状态，不形成渲染循环。
+   */
+  useEffect(() => {
+    const cells = LAYOUT_CONFIG[layout].cells;
+    const visibleIds = ALL_VIEWPORT_IDS.slice(0, cells);
+    const enabled =
+      crossReferenceEnabled && cells >= 2 && mprLayout.mode !== 'on' && vol3dLayout.mode !== 'on';
+    const activeGeometry = enabled
+      ? (apisRef.current.get(activeViewportId)?.getSliceGeometry() ?? null)
+      : null;
+    for (const id of visibleIds) {
+      const api = apisRef.current.get(id);
+      if (!api) {
+        continue;
+      }
+      if (!enabled || id === activeViewportId || activeGeometry === null) {
+        api.setCrossReferenceLine(null);
+        continue;
+      }
+      const targetGeometry = api.getSliceGeometry();
+      if (targetGeometry === null) {
+        api.setCrossReferenceLine(null);
+        continue;
+      }
+      const segment = computeCrossReferenceSegment(activeGeometry, targetGeometry);
+      api.setCrossReferenceLine(segment === null ? null : { segment, geometry: targetGeometry });
+    }
+  }, [
+    activeViewportId,
+    assignments,
+    crossReferenceEnabled,
+    crossReferenceRevision,
+    layout,
+    mprLayout.mode,
+    vol3dLayout.mode,
+  ]);
 
   /** 当前激活序列的 MPR 数据门槛判定（FR-6.7）：不可用时禁用入口并提示原因 */
   const activeMprGate = useMemo(
@@ -2012,6 +2069,29 @@ export default function App() {
             >
               <IconStackScroll />
               <span className="tool-button-label">层滚动</span>
+            </button>
+            {/* FR-3.15 跨视口切面定位线显示开关：独立于 MPR「定位线」主工具，
+                关闭只隐藏本功能线段，不影响 MPR 十字线/其它工具。 */}
+            <button
+              type="button"
+              className={`tool-button${crossReferenceEnabled ? ' tool-button--active' : ''}`}
+              title={
+                crossReferenceEnabled
+                  ? t('app.crossReference.hide')
+                  : t('app.crossReference.show')
+              }
+              aria-label={
+                crossReferenceEnabled
+                  ? t('app.crossReference.hide')
+                  : t('app.crossReference.show')
+              }
+              aria-pressed={crossReferenceEnabled}
+              onClick={() =>
+                updateSettings({ showCrossReferenceLines: !crossReferenceEnabled })
+              }
+            >
+              <IconCrosshair />
+              <span className="tool-button-label">{t('app.crossReference')}</span>
             </button>
             {/* M11-F3 方案 a：MPR 定位线改为「可切换主工具」入口（原右键绑定让位给层滚动）。
                 仅 MPR 布局显示；激活后左键拖动定位线联动三平面，再次点击回归平移。 */}

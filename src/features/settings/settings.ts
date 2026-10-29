@@ -17,6 +17,11 @@ export interface AppSettings {
   maxImageCacheMb: number;
   /** 缩略图缓存条数上限（FR-2.4 LRU；默认 100，范围 10–500） */
   thumbnailMaxCount: number;
+  /**
+   * 跨视口切面定位线开关（FR-3.15，默认开启）。
+   * 可选仅为兼容旧设置对象字面量；sanitizeSettings 总会补全为布尔值。
+   */
+  showCrossReferenceLines?: boolean;
 }
 
 export const SETTINGS_STORAGE_KEY = 'dicom-viewer.settings.v1';
@@ -26,6 +31,7 @@ export const DEFAULT_SETTINGS: Readonly<AppSettings> = Object.freeze({
   language: 'zh',
   maxImageCacheMb: 256,
   thumbnailMaxCount: 100,
+  showCrossReferenceLines: true,
 });
 
 export const CACHE_MB_MIN = 64;
@@ -60,6 +66,11 @@ export function sanitizeSettings(input: unknown): AppSettings {
       THUMB_MIN,
       THUMB_MAX,
     ),
+    // 缺字段/脏值（字符串、数字、null…）一律回落默认 true（FR-3.15）
+    showCrossReferenceLines:
+      typeof source.showCrossReferenceLines === 'boolean'
+        ? source.showCrossReferenceLines
+        : DEFAULT_SETTINGS.showCrossReferenceLines === true,
   };
 }
 

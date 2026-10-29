@@ -52,7 +52,13 @@ describe('sanitizeSettings（非法输入 → 合法设置）', () => {
         maxImageCacheMb: 999999,
         thumbnailMaxCount: 2,
       }),
-    ).toEqual({ theme: 'light', language: 'en', maxImageCacheMb: 4096, thumbnailMaxCount: 10 });
+    ).toEqual({
+      theme: 'light',
+      language: 'en',
+      maxImageCacheMb: 4096,
+      thumbnailMaxCount: 10,
+      showCrossReferenceLines: true,
+    });
     expect(sanitizeSettings({ theme: 'x', language: 'fr' })).toMatchObject({
       theme: 'dark',
       language: 'zh',
@@ -71,6 +77,7 @@ describe('loadSettings / saveSettings（localStorage 持久化）', () => {
       language: 'en',
       maxImageCacheMb: 512,
       thumbnailMaxCount: 200,
+      showCrossReferenceLines: false,
     };
     saveSettings(settings);
     expect(loadSettings()).toEqual(settings);
@@ -80,6 +87,53 @@ describe('loadSettings / saveSettings（localStorage 持久化）', () => {
   it('损坏的 JSON → 回退默认（不抛错）', () => {
     localStorage.setItem(SETTINGS_STORAGE_KEY, '{not-json');
     expect(loadSettings()).toEqual({ ...DEFAULT_SETTINGS });
+  });
+});
+
+describe('showCrossReferenceLines（FR-3.15 开关持久化）', () => {
+  it('默认开启', () => {
+    expect(DEFAULT_SETTINGS.showCrossReferenceLines).toBe(true);
+    expect(loadSettings().showCrossReferenceLines).toBe(true);
+  });
+
+  it('缺字段（旧存储）→ 回落默认 true', () => {
+    localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        theme: 'light',
+        language: 'en',
+        maxImageCacheMb: 512,
+        thumbnailMaxCount: 200,
+      }),
+    );
+    expect(loadSettings()).toMatchObject({
+      theme: 'light',
+      language: 'en',
+      showCrossReferenceLines: true,
+    });
+  });
+
+  it('类型不对的脏值 → 回落默认 true', () => {
+    for (const dirty of ['false', 0, 1, null, {}, []]) {
+      expect(sanitizeSettings({ showCrossReferenceLines: dirty }).showCrossReferenceLines).toBe(
+        true,
+      );
+    }
+  });
+
+  it('合法 false 被保留，保存后可往返读取', () => {
+    expect(sanitizeSettings({ showCrossReferenceLines: false }).showCrossReferenceLines).toBe(
+      false,
+    );
+    const settings: AppSettings = {
+      ...DEFAULT_SETTINGS,
+      showCrossReferenceLines: false,
+    };
+    saveSettings(settings);
+    expect(loadSettings().showCrossReferenceLines).toBe(false);
+    // 再切回开启同样持久化
+    saveSettings({ ...settings, showCrossReferenceLines: true });
+    expect(loadSettings().showCrossReferenceLines).toBe(true);
   });
 });
 
@@ -165,6 +219,7 @@ describe('SettingsPanel（组件）', () => {
       language: 'zh',
       maxImageCacheMb: 4096,
       thumbnailMaxCount: 100,
+      showCrossReferenceLines: true,
     });
     expect(cacheInput.value).toBe('4096');
   });

@@ -10,6 +10,9 @@ export const EN: Record<string, string> = {
   'app.help': 'Help',
   'app.settings': 'Settings',
   'app.emptyHint1': 'Drag DICOM files or a whole folder anywhere in this window',
+  'app.crossReference': 'Reference lines',
+  'app.crossReference.show': 'Show cross-viewport reference line for the active viewport slice plane',
+  'app.crossReference.hide': 'Hide cross-viewport reference lines (MPR crosshairs are unaffected)',
   'app.emptyHint2': 'or use the "Open Files / Open Folder" buttons above',
 
   'help.title': 'Keyboard & Mouse Shortcuts',

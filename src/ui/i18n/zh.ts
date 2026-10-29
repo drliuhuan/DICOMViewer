@@ -9,6 +9,9 @@ export const ZH: Record<string, string> = {
   'app.help': '帮助',
   'app.settings': '设置',
   'app.emptyHint1': '将 DICOM 文件或整个文件夹拖拽到窗口任意位置',
+  'app.crossReference': '参考线',
+  'app.crossReference.show': '显示跨视口参考线：在当前视口显示激活视口切片平面的位置',
+  'app.crossReference.hide': '隐藏跨视口参考线（不影响 MPR 定位线）',
   'app.emptyHint2': '或点击上方「打开文件 / 打开文件夹」按钮',
 
   'help.title': '快捷键与鼠标速查表',

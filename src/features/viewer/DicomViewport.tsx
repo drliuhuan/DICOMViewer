@@ -12,7 +12,7 @@
  *   仅 preventDefault，不拦截 mousedown/mousemove 事件流）；
  * - 通过 onApiReady 上报命令式操作接口，供工具栏与全局快捷键调用。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Enums, RenderingEngine, cache, getRenderingEngine, utilities } from '@cornerstonejs/core';
 import type { Types } from '@cornerstonejs/core';
 import {
@@ -25,6 +25,8 @@ import { addRotation } from './viewTransform';
 import { computeReferenceLineSegments } from '../mpr/referenceLines';
 import type { LineSegment, MprPlaneKey, Point2, Point3 } from '../mpr/referenceLines';
 import { ReferenceLinesOverlay } from '../mpr/ReferenceLinesOverlay';
+import { CROSS_REFERENCE_LINE_COLOR } from './crossReferenceLines';
+import type { CrossReferenceLine, SlicePlaneGeometry } from './crossReferenceLines';
 import { TOUCH_TAP_EVENT } from './touchEvents';
 import { voiRangeFromWwWl } from './wwPresets';
 import { formatGrayValue, samplePixel } from '../../dicom/pixelProbe';
@@ -50,6 +52,11 @@ export interface ViewportUiState {
   invert: boolean;
   /** 视图旋转角度（°）：正值 = 逆时针（FR-3.10） */
   rotation: number;
+  /**
+   * 堆栈加载纪元（FR-3.15）：每次 setStack 成功递增。
+   * 供 App 在「替换序列但层号/层数不变」时也重新计算跨视口定位线。
+   */
+  stackEpoch: number;
 }
 
 /** 切回 2D 后显示的 MPR 十字交点（FR-6.10） */
@@ -81,6 +88,16 @@ export interface ViewportApi {
   rotateStep: (deltaDegrees: number) => void;
   /** 全局视图重置：WW/WL + 缩放 + 平移 + 反色 + 旋转（FR-3.11，Shift+R） */
   resetView: () => void;
+  /**
+   * 读取自身当前切片几何（世界坐标 IPP + 行列方向 + spacing + 行列数），
+   * 供 App 计算跨视口切面定位线（FR-3.15）。
+   */
+  getSliceGeometry: () => SlicePlaneGeometry | null;
+  /**
+   * 接收 App 下发的跨视口切面定位线（目标视口像素坐标）；null 表示清除。
+   * 仅做展示，不改变相机/工具/序列状态（FR-3.15）。
+   */
+  setCrossReferenceLine: (line: CrossReferenceLine | null) => void;
 }
 
 interface DicomViewportProps {
@@ -184,14 +201,206 @@ export function DicomViewport({
     zoom: 1,
     invert: false,
     rotation: 0,
+    stackEpoch: 0,
   });
+  // 堆栈加载纪元（每次 setStack 成功递增；供跨视口定位线重算）
+  const stackEpochRef = useRef(0);
   // 旋转值镜像（rotateStep/resetView 内读取当前值；cornerstone getRotation 兜底）
   const rotationRef = useRef(0);
+
+  // ── 跨视口切面定位线（FR-3.15）──────────────────────
+  // 线段由 App 按「激活视口 → 非激活视口」计算后下发；本组件只负责
+  // 像素坐标 → 世界坐标 → 画布坐标的实时投影，不参与几何计算。
+  const [crossReferenceLine, setCrossReferenceLineState] = useState<CrossReferenceLine | null>(
+    null,
+  );
+  const crossReferenceLineRef = useRef<CrossReferenceLine | null>(null);
+  // items 镜像：命令式 getSliceGeometry 在挂载期创建，不能闭包捕获首帧 props
+  const itemsRef = useRef(items);
+  // 相机变化后仅重投影（rAF 合并），不重算几何，避免逐帧几何开销
+  const projectionRafRef = useRef(0);
+  const [, forceProjection] = useReducer((version: number) => version + 1, 0);
 
   // 默认窗宽窗位变化时保持 ref 同步（供 API 回调读取最新值）
   useEffect(() => {
     defaultWwWlRef.current = defaultWwWl;
   }, [defaultWwWl]);
+
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  useEffect(() => {
+    crossReferenceLineRef.current = crossReferenceLine;
+  }, [crossReferenceLine]);
+
+  // 卸载时取消尚未执行的投影重绘（避免对已卸载视口 setState）
+  useEffect(
+    () => () => {
+      if (projectionRafRef.current !== 0) {
+        cancelAnimationFrame(projectionRafRef.current);
+        projectionRafRef.current = 0;
+      }
+    },
+    [],
+  );
+
+  /**
+   * 读取当前切片几何：imageData 提供 origin/direction/spacing/dimensions，
+   * 当前 StackItem 提供 FrameOfReferenceUID（imageData.metadata 兜底）。
+   * 视口未就绪/字段非法时返回 null（App 据此不画线，不抛错）。
+   */
+  const readSliceGeometry = useCallback((): SlicePlaneGeometry | null => {
+    const vp = viewportRef.current;
+    if (!vp) {
+      return null;
+    }
+    try {
+      const imageData = (vp as { getImageData?: () => unknown }).getImageData?.();
+      if (imageData === null || imageData === undefined || typeof imageData !== 'object') {
+        return null;
+      }
+      const data = imageData as {
+        origin?: unknown;
+        spacing?: unknown;
+        dimensions?: unknown;
+        direction?: unknown;
+        metadata?: Record<string, unknown>;
+      };
+      const origin = Array.isArray(data.origin) ? data.origin : null;
+      const spacing = Array.isArray(data.spacing) ? data.spacing : null;
+      const dimensions = Array.isArray(data.dimensions) ? data.dimensions : null;
+      const direction = Array.isArray(data.direction) ? data.direction : null;
+      if (
+        origin === null ||
+        spacing === null ||
+        dimensions === null ||
+        direction === null ||
+        origin.length < 3 ||
+        spacing.length < 2 ||
+        dimensions.length < 2 ||
+        direction.length < 6
+      ) {
+        return null;
+      }
+      const origin3: Point3 = [origin[0] as number, origin[1] as number, origin[2] as number];
+      const rowDir: Point3 = [
+        direction[0] as number,
+        direction[1] as number,
+        direction[2] as number,
+      ];
+      const colDir: Point3 = [
+        direction[3] as number,
+        direction[4] as number,
+        direction[5] as number,
+      ];
+      const spacingX = spacing[0] as number;
+      const spacingY = spacing[1] as number;
+      const columns = dimensions[0] as number;
+      const rows = dimensions[1] as number;
+      if (
+        !origin3.every((value) => Number.isFinite(value)) ||
+        !rowDir.every((value) => Number.isFinite(value)) ||
+        !colDir.every((value) => Number.isFinite(value)) ||
+        !Number.isFinite(spacingX) ||
+        !Number.isFinite(spacingY) ||
+        spacingX <= 0 ||
+        spacingY <= 0 ||
+        !Number.isFinite(columns) ||
+        !Number.isFinite(rows) ||
+        columns <= 0 ||
+        rows <= 0
+      ) {
+        return null;
+      }
+
+      let sliceIndex = 0;
+      try {
+        sliceIndex = vp.getCurrentImageIdIndex();
+      } catch {
+        // 视口禁用等瞬态：使用首帧兜底
+      }
+      const list = itemsRef.current;
+      const safeIndex = Math.max(0, Math.min(sliceIndex, list.length - 1));
+      const currentItem = list.length > 0 ? list[safeIndex] : undefined;
+      // 序列替换的瞬态：items 已更新但 setStack 尚未完成，imageData 仍属旧序列，
+      // 此时返回 null，避免用旧几何算线；setStack 完成后 stackEpoch 递增会重算。
+      try {
+        const liveImageId = (vp as { getCurrentImageId?: () => string }).getCurrentImageId?.();
+        if (
+          typeof liveImageId === 'string' &&
+          liveImageId !== '' &&
+          currentItem !== undefined &&
+          liveImageId !== currentItem.imageId
+        ) {
+          return null;
+        }
+      } catch {
+        // 视口禁用等瞬态：继续使用 imageData
+      }
+      const metadataUid = data.metadata?.FrameOfReferenceUID;
+      const frameOfReferenceUID =
+        currentItem?.summary.frameOfReferenceUid ??
+        (typeof metadataUid === 'string' && metadataUid !== '' ? metadataUid : undefined);
+
+      return {
+        frameOfReferenceUID,
+        origin: origin3,
+        rowDir,
+        colDir,
+        spacing: [spacingX, spacingY],
+        columns,
+        rows,
+      };
+    } catch {
+      // 视口禁用/卸载竞态：静默返回空
+      return null;
+    }
+  }, []);
+
+  /** 外部线段去重：数值完全一致时复用原对象，避免无谓 re-render */
+  const applyCrossReferenceLine = useCallback((line: CrossReferenceLine | null) => {
+    setCrossReferenceLineState((prev) => {
+      if (prev === null || line === null) {
+        return prev === line ? prev : line;
+      }
+      const a = prev.segment;
+      const b = line.segment;
+      const g = prev.geometry;
+      const h = line.geometry;
+      const same =
+        a.p1.x === b.p1.x &&
+        a.p1.y === b.p1.y &&
+        a.p2.x === b.p2.x &&
+        a.p2.y === b.p2.y &&
+        g.frameOfReferenceUID === h.frameOfReferenceUID &&
+        g.origin[0] === h.origin[0] &&
+        g.origin[1] === h.origin[1] &&
+        g.origin[2] === h.origin[2] &&
+        g.rowDir[0] === h.rowDir[0] &&
+        g.rowDir[1] === h.rowDir[1] &&
+        g.rowDir[2] === h.rowDir[2] &&
+        g.colDir[0] === h.colDir[0] &&
+        g.colDir[1] === h.colDir[1] &&
+        g.colDir[2] === h.colDir[2] &&
+        g.spacing[0] === h.spacing[0] &&
+        g.spacing[1] === h.spacing[1] &&
+        g.columns === h.columns &&
+        g.rows === h.rows;
+      return same ? prev : line;
+    });
+  }, []);
+
+  /** 相机变化后按帧合并重投影（仅存在定位线时才触发） */
+  const scheduleCrossReferenceProjection = useCallback(() => {
+    if (crossReferenceLineRef.current === null || projectionRafRef.current !== 0) {
+      return;
+    }
+    projectionRafRef.current = requestAnimationFrame(() => {
+      projectionRafRef.current = 0;
+      forceProjection();
+    });
+  }, []);
 
   // MPR 参考线（FR-6.10）：每次切片变化重算像素坐标线段；
   // 画布坐标随相机在渲染时实时投影（worldToCanvas），平移/缩放/旋转自动保持。
@@ -218,7 +427,8 @@ export function DicomViewport({
         prev.wl === next.wl &&
         prev.zoom === next.zoom &&
         prev.invert === next.invert &&
-        prev.rotation === next.rotation
+        prev.rotation === next.rotation &&
+        prev.stackEpoch === next.stackEpoch
         ? prev
         : next;
     });
@@ -360,6 +570,8 @@ export function DicomViewport({
             vp?.resetCamera({ resetPan: true, resetZoom: true });
             vp?.render();
           },
+          getSliceGeometry: readSliceGeometry,
+          setCrossReferenceLine: applyCrossReferenceLine,
           resetView: () => {
             const vp = viewportRef.current;
             if (!vp) {
@@ -453,10 +665,12 @@ export function DicomViewport({
           return;
         }
         setRenderError(null);
+        stackEpochRef.current += 1;
         publishUi({
           sliceCount: imageIds.length,
           sliceIndex: viewport.getCurrentImageIdIndex(),
           zoom: 1,
+          stackEpoch: stackEpochRef.current,
           ...voiToWwWl(viewport.getProperties().voiRange),
         });
       } catch (error) {
@@ -547,6 +761,8 @@ export function DicomViewport({
         try {
           const engine = getRenderingEngine(RENDERING_ENGINE_ID);
           engine?.resize(true, true); // immediate + keepCamera
+          // 尺寸变化后画布投影矩阵改变，定位线需按新画布重投影（FR-3.15）
+          scheduleCrossReferenceProjection();
         } catch {
           // 引擎销毁等卸载竞态：静默忽略
         }
@@ -561,7 +777,7 @@ export function DicomViewport({
         rafId = 0;
       }
     };
-  }, []);
+  }, [scheduleCrossReferenceProjection]);
 
   // 视口事件订阅：翻页滚动 → 层号；VOI 变化 → WW/WL；相机变化 → 缩放比例；
   // 双击（桌面 dblclick / 触控 TOUCH_TAP taps=2）→ 适应窗口（FR-3.4/FR-14.1）
@@ -593,6 +809,7 @@ export function DicomViewport({
         vp.resetCamera({ resetPan: true, resetZoom: true });
         vp.render();
         syncZoom();
+        scheduleCrossReferenceProjection();
       }
     };
     // 触控双击（FR-14.1）：Cornerstone 将快速两次轻点合成 TOUCH_TAP（taps=2），
@@ -604,9 +821,14 @@ export function DicomViewport({
       }
       onDoubleClick();
     };
+    const onCameraModified = () => {
+      syncZoom();
+      // 平移/缩放/旋转/翻层后线段必须跟随图像（只重投影，不重算几何）
+      scheduleCrossReferenceProjection();
+    };
     element.addEventListener(Enums.Events.STACK_VIEWPORT_SCROLL, onScroll);
     element.addEventListener(Enums.Events.VOI_MODIFIED, onVoiModified);
-    element.addEventListener(Enums.Events.CAMERA_MODIFIED, syncZoom);
+    element.addEventListener(Enums.Events.CAMERA_MODIFIED, onCameraModified);
     element.addEventListener('dblclick', onDoubleClick);
     if (TOUCH_TAP_EVENT) {
       element.addEventListener(TOUCH_TAP_EVENT, onTouchTap);
@@ -614,13 +836,13 @@ export function DicomViewport({
     return () => {
       element.removeEventListener(Enums.Events.STACK_VIEWPORT_SCROLL, onScroll);
       element.removeEventListener(Enums.Events.VOI_MODIFIED, onVoiModified);
-      element.removeEventListener(Enums.Events.CAMERA_MODIFIED, syncZoom);
+      element.removeEventListener(Enums.Events.CAMERA_MODIFIED, onCameraModified);
       element.removeEventListener('dblclick', onDoubleClick);
       if (TOUCH_TAP_EVENT) {
         element.removeEventListener(TOUCH_TAP_EVENT, onTouchTap);
       }
     };
-  }, [publishUi, viewportId]);
+  }, [publishUi, scheduleCrossReferenceProjection, viewportId]);
 
   // 像素探针（FR-4.5）：光标 → 图像索引 → 原始像素 → Modality LUT
   useEffect(() => {
@@ -795,6 +1017,40 @@ export function DicomViewport({
               toWorld={toWorld}
               project={project}
             />
+          );
+        })()}
+      {/* FR-3.15 跨视口切面定位线：App 已按目标视口像素坐标裁切为单条线段；
+          这里复用 ReferenceLinesOverlay 做像素→世界→画布投影。plane 固定
+          'axial' 仅为取现有调色板中的黄色（#ffff00），不按平面语义取色。 */}
+      {crossReferenceLine !== null &&
+        renderError === null &&
+        (() => {
+          const { geometry, segment } = crossReferenceLine;
+          const toWorld = (p: Point2) =>
+            pixelToWorld(geometry.origin, geometry.spacing, geometry.rowDir, geometry.colDir, p);
+          const project = (world: Point3): { x: number; y: number } | undefined => {
+            try {
+              const canvas = viewportRef.current?.worldToCanvas(world);
+              if (!canvas) {
+                return undefined;
+              }
+              return { x: canvas[0], y: canvas[1] };
+            } catch {
+              return undefined;
+            }
+          };
+          return (
+            <div
+              className="cross-reference-lines"
+              data-testid="cross-reference-lines"
+              data-line-color={CROSS_REFERENCE_LINE_COLOR}
+            >
+              <ReferenceLinesOverlay
+                segments={[{ plane: 'axial', p1: segment.p1, p2: segment.p2 }]}
+                toWorld={toWorld}
+                project={project}
+              />
+            </div>
           );
         })()}
       {canSlide && (
