@@ -9,8 +9,8 @@ A browser-based medical imaging DICOM viewer: open DICOM files/folders locally, 
   **Loading**: open single/multiple files, open folders, drag-and-drop recursive directory loading; automatic non-DICOM detection with error reports; cancellable parsing progress; automatic SOPInstanceUID deduplication across batches
 - **序列管理**：患者→检查→序列树形导航、序列首帧缩略图、SliceLocation/IPP 实例排序、序列拖拽到任意视口、关闭序列与全量资源释放
   **Series management**: patient→study→series tree navigation, first-frame thumbnails, SliceLocation/IPP instance sorting, drag series onto any viewport, close series with full resource release
-- **阅片**：窗宽窗位预设与实时调节、缩放/平移/层滚动、1×1 / 1×2 / 2×2 多视口布局、多帧翻页与 Cine 播放、反色、旋转、四角信息覆盖、HU 像素探针、解剖方向标记、全局快捷键体系
-  **Viewing**: window/level presets with live adjustment, zoom/pan/slice scrolling, 1×1 / 1×2 / 2×2 multi-viewport layouts, multi-frame paging and Cine playback, invert, rotate, corner overlay info, HU pixel probe, anatomical orientation markers, global keyboard shortcuts
+- **阅片**：窗宽窗位预设与实时调节、缩放/平移/层滚动、1×1 / 1×2 / 2×2 多视口布局、**多视口切面定位线**（激活影像的切面位置在其它视口以黄色参考线标出，工具栏可一键开关、状态记忆）、多帧翻页与 Cine 播放、反色、旋转、四角信息覆盖、HU 像素探针、解剖方向标记、全局快捷键体系
+  **Viewing**: window/level presets with live adjustment, zoom/pan/slice scrolling, 1×1 / 1×2 / 2×2 multi-viewport layouts, **cross-viewport slice localization lines** (the active image's slice position drawn as a yellow reference line in the other viewports, toggleable from the toolbar with remembered state), multi-frame paging and Cine playback, invert, rotate, corner overlay info, HU pixel probe, anatomical orientation markers, global keyboard shortcuts
 - **测量标注**：长度、角度、矩形/椭圆 ROI（均值/标准差/极值/面积）、Cobb 角测量；测量面板快照、JSON 导入导出、DICOM SR 结构化报告输出
   **Measurements**: length, angle, rectangle/ellipse ROI (mean/std-dev/min-max/area), Cobb angle; measurement panel snapshots, JSON import/export, DICOM SR structured report output
 - **MPR 三平面重建**：轴/冠/矢三平面联动、定位线拖动、厚度模式、与 2D 视口参考线随动
@@ -30,7 +30,7 @@ A browser-based medical imaging DICOM viewer: open DICOM files/folders locally, 
 - Vite 5 构建，产物按 cornerstone / react-vendor / vendor 分包 / Vite 5 build, chunked by cornerstone / react-vendor / vendor
 - @cornerstonejs/core + @cornerstonejs/tools + @cornerstonejs/dicom-image-loader + dicom-parser
 - @kitware/vtk.js（3D 体绘制 / 3D volume rendering）
-- Vitest 单元测试（600+）/ Vitest unit tests (600+); ESLint 9 + Prettier
+- Vitest 单元测试（630+）/ Vitest unit tests (630+); ESLint 9 + Prettier
 
 ## 快速开始 / Quick Start
 
