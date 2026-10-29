@@ -515,7 +515,7 @@ describe('App 集成：跨视口定位线（FR-3.15）', () => {
   });
 
   it('激活/切换/翻层/开关', async () => {
-    const { view } = await renderLoaded();
+    const { view, viewports } = await renderLoaded();
     // 2 个序列已加载到 vp-0（轴位）
     clickButton(view.container, '1×2');
     await flush();
@@ -544,6 +544,20 @@ describe('App 集成：跨视口定位线（FR-3.15）', () => {
     fireEvent.change(slider, { target: { value: '2' } });
     await flush();
     expect(lineLefts(cells(view.container)[1]!)[0]).toBeCloseTo(90, 3);
+
+    // 模拟目标视口相机平移（投影矩阵变化）→ CAMERA_MODIFIED 后线随图像重投影
+    const targetViewport = viewports.get('vp-1')!;
+    const baseProject = targetViewport.worldToCanvas.getMockImplementation()!;
+    targetViewport.worldToCanvas.mockImplementation((world: number[]) => {
+      const projected = baseProject(world);
+      return projected === undefined ? undefined : [projected[0]! + 7, projected[1]!];
+    });
+    const targetElement = cells(view.container)[1]!.querySelector('.cornerstone-element')!;
+    await act(async () => {
+      targetElement.dispatchEvent(new Event('cornerstonecameramodified'));
+    });
+    await flush();
+    expect(lineLefts(cells(view.container)[1]!)[0]).toBeCloseTo(97, 3);
 
     // 切换激活到矢状位 → 轴位出现线，矢状位无线
     fireEvent.mouseDown(cells(view.container)[1]!);
